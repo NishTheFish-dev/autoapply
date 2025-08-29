@@ -15,9 +15,9 @@
   const LS_KEYS = { profile: 'aa_profile_v1', settings: 'aa_settings_v1' };
   const DEFAULT_PROFILE = {
     // Basics
-    firstName: '', lastName: '', email: '', phone: '', phoneCountryCode: '+1', address1: '', address2: '', city: '', state: '', postalCode: '', country: '', linkedin: '', github: '', website: '', graduationDate: '',
+    firstName: '', lastName: '', email: '', phone: '', phoneCountryCode: '+1', phoneDeviceType: 'mobile', address1: '', address2: '', city: '', state: '', postalCode: '', country: '', linkedin: '', github: '', website: '', graduationDate: '',
     // Job Specific
-    currentCompany: '', currentTitle: '', yearsExperience: '', workAuthorization: '', sponsorshipRequired: '', salaryExpectation: '', noticePeriod: '', availableStartDate: '', relocationPreference: '', remotePreference: '', travelPercentage: '', desiredLocations: '', securityClearance: '',
+    currentCompany: '', currentTitle: '', yearsExperience: '', workAuthorization: '', sponsorshipRequired: '', salaryExpectation: '', noticePeriod: '', availableStartDate: '', relocationPreference: '', remotePreference: '', travelPercentage: '', desiredLocations: '', securityClearance: '', hearAboutUs: '', previouslyWorkedHere: '',
     // Demographic
     gender: '', raceEthnicity: '', veteranStatus: '', disabilityStatus: '', pronouns: ''
   };
@@ -46,6 +46,9 @@
     linkedin: ['linkedin','linkedin url','linkedin profile'],
     github: ['github','github url'],
     website: ['website','portfolio','personal site','portfolio url','site','blog','homepage'],
+    hearAboutUs: ['how did you hear about us','how did you hear','referral source','source','how you heard','where did you hear about us','how heard'],
+    phoneDeviceType: ['phone device type','phone type','telephone type','device type of phone','mobile type'],
+    previouslyWorkedHere: ['previously worked','worked for','former employee','ever worked here','previously employed','past employee','worked here before'],
     // Education
     graduationDate: ['graduation date','expected graduation date','anticipated graduation','degree completion date','grad date','expected graduation'],
     graduationMonth: ['graduation month','month of graduation','grad month'],
@@ -74,6 +77,26 @@
   };
   const KEYWORDS = Object.entries(SYNONYMS).flatMap(([k, arr]) => arr.map(a => [k, strip(a)]));
   const ATTRS = ['name','id','placeholder','aria-label','data-automation-id','data-testid'];
+
+  // Demographics helpers for NA -> Prefer not to answer mapping
+  const DEMO_KEYS = new Set(['gender','raceEthnicity','veteranStatus','disabilityStatus','pronouns']);
+  function isNA(val) {
+    const t = norm(val);
+    return t === 'na' || t === 'n/a' || t === 'n a' || t === 'not applicable' || t === 'none';
+  }
+  function preferNotCandidates() {
+    return [
+      'prefer not to answer',
+      'prefer not to say',
+      'do not wish to provide',
+      'i do not wish to provide this information',
+      'decline to state',
+      'not specified',
+      'undisclosed',
+      'not disclosed',
+      'unknown'
+    ].map(s => norm(s));
+  }
 
   // Month helpers
   const MONTH_NAMES = ['january','february','march','april','may','june','july','august','september','october','november','december'];
@@ -233,6 +256,12 @@
         // candidates: exact value or label match; also yes/no normalization
         const yn = truthyFromString(nv);
         const cands = new Set([nv]);
+        try {
+          const k = keyForElement(el);
+          if (k && DEMO_KEYS.has(k) && isNA(value)) {
+            for (const c of preferNotCandidates()) { cands.add(c); cands.add(strip(c)); }
+          }
+        } catch {}
         if (yn === true) { cands.add('yes'); cands.add('y'); cands.add('true'); cands.add('1'); }
         if (yn === false) { cands.add('no'); cands.add('n'); cands.add('false'); cands.add('0'); }
         let picked = null;
@@ -306,12 +335,24 @@
         const arr = [nv];
         try {
           const k = keyForElement(el);
+          // If user provided N/A for demographics, try prefer-not answers
+          if (k && DEMO_KEYS.has(k) && isNA(value)) { for (const c of preferNotCandidates()) arr.push(c); }
+          // Handle yes/no style selects generically
+          const yn = truthyFromString(nv);
+          if (yn === true) { arr.push('yes','y','true','1'); }
+          if (yn === false) { arr.push('no','n','false','0'); }
           if (k === 'state') {
             // Add abbreviation/full-name alternatives
             const abbr = US_STATE_NAME_TO_ABBR[nv];
             const full = US_STATE_MAP[nv];
             if (abbr) arr.push(abbr);
             if (full) arr.push(full);
+          } else if (k === 'phoneDeviceType') {
+            // Map device type to common option labels
+            if (nv === 'mobile') { arr.push('cell','cell phone','mobile phone','cellular','mobile/cell'); }
+            if (nv === 'home') { arr.push('home phone','residential'); }
+            if (nv === 'work') { arr.push('work phone','office','business'); }
+            if (nv === 'other') { arr.push('other'); }
           } else if (k === 'graduationMonth') {
             for (const c of monthCandidatesFrom(nv)) arr.push(c);
           } else if (k === 'graduationYear') {
@@ -580,7 +621,7 @@
       .row { display:grid; grid-template-columns: 110px 1fr; gap: 8px; align-items:center; margin:6px 0; }
       .section { margin-top: 10px; padding-top: 6px; border-top: 1px solid #ffffff1a; font-size: 11px; letter-spacing:.5px; text-transform: uppercase; opacity:.85; }
       label { font-size: 12px; opacity:.9; }
-      input[type=text], input[type=email], input[type=tel] { width:100%; padding:8px; border-radius:8px; border:1px solid #ffffff2a; background:#111; color:#fff; }
+      input[type=text], input[type=email], input[type=tel], select { width:100%; padding:8px; border-radius:8px; border:1px solid #ffffff2a; background:#111; color:#fff; }
       .ctrls { display:flex; gap:8px; margin-top:8px; }
       button { padding:8px 10px; border-radius:8px; border:1px solid #ffffff2a; background:#2a2a2a; color:#fff; cursor:pointer; }
       button.primary { background:#1a73e8; border-color:#1a73e8; }
@@ -591,6 +632,11 @@
       .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap:8px; }
       .close { appearance:none; background:transparent; border:none; color:#fff; font-size:16px; cursor:pointer; }
       .hidden { display:none !important; }
+      .tabs { display:flex; gap:6px; margin: 4px 0 8px; }
+      .tab { flex:1; padding:6px 8px; border-radius:8px; border:1px solid #ffffff2a; background:#2a2a2a; color:#fff; cursor:pointer; font-size:12px; }
+      .tab.active { background:#1a73e8; border-color:#1a73e8; }
+      .screen { display:none; }
+      .screen.active { display:block; }
     `;
     shadow.appendChild(style);
 
@@ -602,44 +648,72 @@
         <button class="close" title="Close">✕</button>
       </div>
       <div class="body">
-        <div class="section">Basics</div>
-        <div class="row"><label>First</label><input id="aa_firstName" type="text" /></div>
-        <div class="row"><label>Last</label><input id="aa_lastName" type="text" /></div>
-        <div class="row"><label>Email</label><input id="aa_email" type="email" /></div>
-        <div class="row"><label>Phone</label><input id="aa_phone" type="tel" /></div>
-        <div class="row"><label>Phone Code</label><input id="aa_phoneCountryCode" type="text" /></div>
-        <div class="row"><label>Address1</label><input id="aa_address1" type="text" /></div>
-        <div class="row"><label>Address2</label><input id="aa_address2" type="text" /></div>
-        <div class="row"><label>City</label><input id="aa_city" type="text" /></div>
-        <div class="row"><label>State</label><input id="aa_state" type="text" /></div>
-        <div class="row"><label>Postal</label><input id="aa_postalCode" type="text" /></div>
-        <div class="row"><label>Country</label><input id="aa_country" type="text" /></div>
-        <div class="row"><label>LinkedIn</label><input id="aa_linkedin" type="text" /></div>
-        <div class="row"><label>GitHub</label><input id="aa_github" type="text" /></div>
-        <div class="row"><label>Website</label><input id="aa_website" type="text" /></div>
-        <div class="row"><label>Graduation Date</label><input id="aa_graduationDate" type="text" placeholder="MM/DD/YYYY" /></div>
+        <div class="tabs">
+          <button class="tab active" data-screen="basics">Basics</button>
+          <button class="tab" data-screen="job">Job-Specific</button>
+          <button class="tab" data-screen="demo">Demographics</button>
+        </div>
+        <div class="screen screen-basics active">
+          <div class="section">Basics</div>
+          <div class="row"><label>First</label><input id="aa_firstName" type="text" /></div>
+          <div class="row"><label>Last</label><input id="aa_lastName" type="text" /></div>
+          <div class="row"><label>Email</label><input id="aa_email" type="email" /></div>
+          <div class="row"><label>Phone</label><input id="aa_phone" type="tel" /></div>
+          <div class="row"><label>Device Type</label>
+            <select id="aa_phoneDeviceType">
+              <option value="mobile">Mobile</option>
+              <option value="home">Home</option>
+              <option value="work">Work</option>
+              <option value="other">Other</option>
+            </select>
+          </div>
+          <div class="row"><label>Phone Code</label><input id="aa_phoneCountryCode" type="text" /></div>
+          <div class="row"><label>Address1</label><input id="aa_address1" type="text" /></div>
+          <div class="row"><label>Address2</label><input id="aa_address2" type="text" /></div>
+          <div class="row"><label>City</label><input id="aa_city" type="text" /></div>
+          <div class="row"><label>State</label><input id="aa_state" type="text" /></div>
+          <div class="row"><label>Postal</label><input id="aa_postalCode" type="text" /></div>
+          <div class="row"><label>Country</label><input id="aa_country" type="text" /></div>
+          <div class="row"><label>LinkedIn</label><input id="aa_linkedin" type="text" /></div>
+          <div class="row"><label>GitHub</label><input id="aa_github" type="text" /></div>
+          <div class="row"><label>Website</label><input id="aa_website" type="text" /></div>
+          <div class="row"><label>Graduation Date</label><input id="aa_graduationDate" type="text" placeholder="MM/DD/YYYY" /></div>
+        </div>
 
-        <div class="section">Job Specific</div>
-        <div class="row"><label>Current Company</label><input id="aa_currentCompany" type="text" /></div>
-        <div class="row"><label>Current Title</label><input id="aa_currentTitle" type="text" /></div>
-        <div class="row"><label>Years Experience</label><input id="aa_yearsExperience" type="text" /></div>
-        <div class="row"><label>Work Authorization</label><input id="aa_workAuthorization" type="text" /></div>
-        <div class="row"><label>Sponsorship Required</label><input id="aa_sponsorshipRequired" type="text" /></div>
-        <div class="row"><label>Salary Expectation</label><input id="aa_salaryExpectation" type="text" /></div>
-        <div class="row"><label>Notice Period</label><input id="aa_noticePeriod" type="text" /></div>
-        <div class="row"><label>Available Start Date</label><input id="aa_availableStartDate" type="text" /></div>
-        <div class="row"><label>Relocation Preference</label><input id="aa_relocationPreference" type="text" /></div>
-        <div class="row"><label>Remote Preference</label><input id="aa_remotePreference" type="text" /></div>
-        <div class="row"><label>Travel %</label><input id="aa_travelPercentage" type="text" /></div>
-        <div class="row"><label>Desired Locations</label><input id="aa_desiredLocations" type="text" /></div>
-        <div class="row"><label>Security Clearance</label><input id="aa_securityClearance" type="text" /></div>
+        <div class="screen screen-job">
+          <div class="section">Job Specific</div>
+          <div class="row"><label>Current Company</label><input id="aa_currentCompany" type="text" /></div>
+          <div class="row"><label>Current Title</label><input id="aa_currentTitle" type="text" /></div>
+          <div class="row"><label>Years Experience</label><input id="aa_yearsExperience" type="text" /></div>
+          <div class="row"><label>Work Authorization</label><input id="aa_workAuthorization" type="text" /></div>
+          <div class="row"><label>Sponsorship Required</label><input id="aa_sponsorshipRequired" type="text" /></div>
+          <div class="row"><label>Salary Expectation</label><input id="aa_salaryExpectation" type="text" /></div>
+          <div class="row"><label>Notice Period</label><input id="aa_noticePeriod" type="text" /></div>
+          <div class="row"><label>Available Start Date</label><input id="aa_availableStartDate" type="text" /></div>
+          <div class="row"><label>Relocation Preference</label><input id="aa_relocationPreference" type="text" /></div>
+          <div class="row"><label>Remote Preference</label><input id="aa_remotePreference" type="text" /></div>
+          <div class="row"><label>Travel %</label><input id="aa_travelPercentage" type="text" /></div>
+          <div class="row"><label>Desired Locations</label><input id="aa_desiredLocations" type="text" /></div>
+          <div class="row"><label>Security Clearance</label><input id="aa_securityClearance" type="text" /></div>
+          <div class="row"><label>Heard About Us</label><input id="aa_hearAboutUs" type="text" placeholder="e.g., Referral, LinkedIn, Indeed" /></div>
+          <div class="row"><label>Worked Here Before</label>
+            <select id="aa_previouslyWorkedHere">
+              <option value="">-</option>
+              <option value="yes">Yes</option>
+              <option value="no">No</option>
+            </select>
+          </div>
+        </div>
 
-        <div class="section">Demographic</div>
-        <div class="row"><label>Gender</label><input id="aa_gender" type="text" /></div>
-        <div class="row"><label>Race/Ethnicity</label><input id="aa_raceEthnicity" type="text" /></div>
-        <div class="row"><label>Veteran Status</label><input id="aa_veteranStatus" type="text" /></div>
-        <div class="row"><label>Disability Status</label><input id="aa_disabilityStatus" type="text" /></div>
-        <div class="row"><label>Pronouns</label><input id="aa_pronouns" type="text" /></div>
+        <div class="screen screen-demo">
+          <div class="section">Demographic</div>
+          <div class="row"><label>Gender</label><input id="aa_gender" type="text" placeholder="Value or N/A" /></div>
+          <div class="row"><label>Race/Ethnicity</label><input id="aa_raceEthnicity" type="text" placeholder="Value or N/A" /></div>
+          <div class="row"><label>Veteran Status</label><input id="aa_veteranStatus" type="text" placeholder="Value or N/A" /></div>
+          <div class="row"><label>Disability Status</label><input id="aa_disabilityStatus" type="text" placeholder="Value or N/A" /></div>
+          <div class="row"><label>Pronouns</label><input id="aa_pronouns" type="text" placeholder="Value or N/A" /></div>
+        </div>
+
         <div class="ctrls grid2">
           <button id="aa_fill" class="primary">Fill now</button>
           <button id="aa_save">Save</button>
@@ -658,9 +732,9 @@
     const qs = id => shadow.getElementById(id);
     const FIELDS = [
       // Basics
-      'firstName','lastName','email','phone','phoneCountryCode','address1','address2','city','state','postalCode','country','linkedin','github','website','graduationDate',
+      'firstName','lastName','email','phone','phoneDeviceType','phoneCountryCode','address1','address2','city','state','postalCode','country','linkedin','github','website','graduationDate',
       // Job Specific
-      'currentCompany','currentTitle','yearsExperience','workAuthorization','sponsorshipRequired','salaryExpectation','noticePeriod','availableStartDate','relocationPreference','remotePreference','travelPercentage','desiredLocations','securityClearance',
+      'currentCompany','currentTitle','yearsExperience','workAuthorization','sponsorshipRequired','salaryExpectation','noticePeriod','availableStartDate','relocationPreference','remotePreference','travelPercentage','desiredLocations','securityClearance','hearAboutUs','previouslyWorkedHere',
       // Demographic
       'gender','raceEthnicity','veteranStatus','disabilityStatus','pronouns'
     ];
@@ -699,6 +773,15 @@
     });
     qs('aa_auto').addEventListener('change', (ev) => { const s = storage.getSettings(); s.autoEnabled = !!ev.target.checked; storage.saveSettings(s); if (s.autoEnabled) debouncedFill(); });
     wrap.querySelector('.close').addEventListener('click', () => { host.remove(); window[NS] = null; });
+
+    // Tab switching
+    function switchScreen(name) {
+      const screens = shadow.querySelectorAll('.screen');
+      screens.forEach(s => s.classList.toggle('active', s.classList.contains(`screen-${name}`)));
+      const tabs = shadow.querySelectorAll('.tab');
+      tabs.forEach(t => t.classList.toggle('active', t.getAttribute('data-screen') === name));
+    }
+    shadow.querySelectorAll('.tab').forEach(btn => btn.addEventListener('click', () => switchScreen(btn.getAttribute('data-screen'))));
 
     loadUI();
 
