@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "AutoApply",
+  "description": "Automatically fill common fields on job application sites (Workday, iCIMS, etc.).",
+  "version": "0.1.0",
+  "action": {
+    "default_title": "AutoApply",
+    "default_popup": "src/ui/popup.html"
+  },
+  "options_page": "src/ui/options.html",
+  "permissions": [
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "*://*.myworkdayjobs.com/*",
+    "*://*.workday.com/*",
+    "*://*.icims.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.myworkdayjobs.com/*",
+        "*://*.workday.com/*",
+        "*://*.icims.com/*"
+      ],
+      "js": [
+        "src/common/storage.js",
+        "src/content/autofill/engine.js",
+        "src/content/vendors/workday.js",
+        "src/content/vendors/icims.js",
+        "src/content/vendors/generic.js",
+        "src/content/content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "background": {
+    "service_worker": "src/background/service-worker.js"
+  }
+}

@@ -1,0 +1,43 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>AutoApply</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: ui-sans-serif, system-ui, Segoe UI, Roboto, Arial, sans-serif; margin: 0; padding: 12px; width: 320px; }
+    header { font-weight: 600; margin-bottom: 8px; }
+    .row { margin: 8px 0; display: flex; align-items: center; justify-content: space-between; }
+    .muted { opacity: 0.7; font-size: 12px; }
+    button { padding: 6px 10px; border: 1px solid #8883; border-radius: 6px; background: #eee; cursor: pointer; }
+    button.primary { background: #1a73e8; color: white; border-color: #1a73e8; }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .grid { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
+    .status { font-size: 12px; }
+    .toggle { display: flex; align-items: center; gap: 8px; }
+  </style>
+</head>
+<body>
+  <header>AutoApply</header>
+
+  <div class="status">
+    <div>Host: <span id="host">-</span></div>
+    <div>Site engine: <span id="vendor">-</span></div>
+  </div>
+
+  <div class="row toggle">
+    <label for="enabledToggle">Enable autofill on this site</label>
+    <input type="checkbox" id="enabledToggle" />
+  </div>
+
+  <div class="row grid">
+    <button id="fillNow" class="primary">Fill now</button>
+    <button id="optionsBtn">Options</button>
+  </div>
+
+  <div class="row muted" id="result"></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

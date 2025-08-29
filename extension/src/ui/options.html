@@ -1,0 +1,81 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>AutoApply Options</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: ui-sans-serif, system-ui, Segoe UI, Roboto, Arial, sans-serif; margin: 0; padding: 16px; max-width: 860px; }
+    h1 { font-size: 20px; margin: 0 0 12px; }
+    .grid { display: grid; grid-template-columns: 200px 1fr; gap: 8px 12px; align-items: center; }
+    label { font-weight: 600; }
+    input[type="text"], input[type="email"], input[type="tel"] { width: 100%; padding: 8px; border-radius: 6px; border: 1px solid #8883; }
+    .row { margin: 14px 0; display: flex; gap: 8px; }
+    button { padding: 8px 12px; border-radius: 6px; border: 1px solid #8883; cursor: pointer; }
+    button.primary { background: #1a73e8; color: #fff; border-color: #1a73e8; }
+    .muted { opacity: .75; font-size: 12px; }
+    footer { margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <h1>AutoApply Options</h1>
+  <p class="muted">Your data is stored locally in your browser via chrome.storage.local. Nothing is uploaded.</p>
+
+  <form id="profileForm" class="grid">
+    <label for="firstName">First Name</label>
+    <input id="firstName" name="firstName" type="text" autocomplete="given-name" />
+
+    <label for="lastName">Last Name</label>
+    <input id="lastName" name="lastName" type="text" autocomplete="family-name" />
+
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" autocomplete="email" />
+
+    <label for="phone">Phone</label>
+    <input id="phone" name="phone" type="tel" autocomplete="tel" />
+
+    <label for="address1">Address Line 1</label>
+    <input id="address1" name="address1" type="text" autocomplete="address-line1" />
+
+    <label for="address2">Address Line 2</label>
+    <input id="address2" name="address2" type="text" autocomplete="address-line2" />
+
+    <label for="city">City</label>
+    <input id="city" name="city" type="text" autocomplete="address-level2" />
+
+    <label for="state">State/Province</label>
+    <input id="state" name="state" type="text" autocomplete="address-level1" />
+
+    <label for="postalCode">Postal Code</label>
+    <input id="postalCode" name="postalCode" type="text" autocomplete="postal-code" />
+
+    <label for="country">Country</label>
+    <input id="country" name="country" type="text" autocomplete="country-name" />
+
+    <label for="linkedin">LinkedIn URL</label>
+    <input id="linkedin" name="linkedin" type="text" placeholder="https://www.linkedin.com/in/you" />
+
+    <label for="github">GitHub URL</label>
+    <input id="github" name="github" type="text" placeholder="https://github.com/you" />
+
+    <label for="website">Website</label>
+    <input id="website" name="website" type="text" placeholder="https://yourdomain.com" />
+  </form>
+
+  <div class="row">
+    <button id="saveBtn" class="primary">Save</button>
+    <button id="resetBtn">Reset to defaults</button>
+    <button id="exportBtn">Export JSON</button>
+    <button id="importBtn">Import JSON</button>
+    <input id="importFile" type="file" accept="application/json" style="display:none" />
+  </div>
+
+  <div id="msg" class="muted"></div>
+
+  <footer class="muted">Tip: Use the popup to enable/disable autofill per site and trigger a fill.</footer>
+
+  <script src="../common/storage.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>
