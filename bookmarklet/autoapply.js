@@ -14,7 +14,7 @@
   // --- Storage (localStorage) ---
   const LS_KEYS = { profile: 'aa_profile_v1', settings: 'aa_settings_v1' };
   const DEFAULT_PROFILE = {
-    firstName: '', lastName: '', email: '', phone: '', address1: '', address2: '', city: '', state: '', postalCode: '', country: '', linkedin: '', github: '', website: ''
+    firstName: '', lastName: '', email: '', phone: '', phoneCountryCode: '+1', address1: '', address2: '', city: '', state: '', postalCode: '', country: '', linkedin: '', github: '', website: ''
   };
   const DEFAULT_SETTINGS = { autoEnabled: false };
   const storage = {
@@ -32,7 +32,7 @@
     lastName: ['last name','surname','family name','lname'],
     email: ['email','e-mail','email address'],
     phone: ['phone','mobile','telephone','cell'],
-    address1: ['address','address line 1','street','street address','address1'],
+    address1: ['address line 1','street','street address','address1'],
     address2: ['address line 2','apt','apartment','suite','unit','address2'],
     city: ['city','town'],
     state: ['state','province','region'],
@@ -44,6 +44,18 @@
   };
   const KEYWORDS = Object.entries(SYNONYMS).flatMap(([k, arr]) => arr.map(a => [k, strip(a)]));
   const ATTRS = ['name','id','placeholder','aria-label','data-automation-id','data-testid'];
+
+  // US state mapping for abbreviation/full-name cross-matching
+  const US_STATE_MAP = {
+    al: 'alabama', ak: 'alaska', az: 'arizona', ar: 'arkansas', ca: 'california', co: 'colorado', ct: 'connecticut',
+    de: 'delaware', fl: 'florida', ga: 'georgia', hi: 'hawaii', id: 'idaho', il: 'illinois', in: 'indiana', ia: 'iowa',
+    ks: 'kansas', ky: 'kentucky', la: 'louisiana', me: 'maine', md: 'maryland', ma: 'massachusetts', mi: 'michigan',
+    mn: 'minnesota', ms: 'mississippi', mo: 'missouri', mt: 'montana', ne: 'nebraska', nv: 'nevada', nh: 'new hampshire',
+    nj: 'new jersey', nm: 'new mexico', ny: 'new york', nc: 'north carolina', nd: 'north dakota', oh: 'ohio', ok: 'oklahoma',
+    or: 'oregon', pa: 'pennsylvania', ri: 'rhode island', sc: 'south carolina', sd: 'south dakota', tn: 'tennessee', tx: 'texas',
+    ut: 'utah', vt: 'vermont', va: 'virginia', wa: 'washington', wv: 'west virginia', wi: 'wisconsin', wy: 'wyoming', dc: 'district of columbia'
+  };
+  const US_STATE_NAME_TO_ABBR = Object.fromEntries(Object.entries(US_STATE_MAP).map(([abbr, name]) => [name, abbr]));
 
   function getLabelText(el) {
     let t = '';
@@ -71,9 +83,20 @@
     for (const a of ATTRS) { const v = el.getAttribute(a); if (v) c.push(v); }
     c.push(getLabelText(el));
     const text = strip(c.filter(Boolean).join(' | '));
-    for (const [key, kw] of KEYWORDS) { if (text.includes(kw)) return key; }
+    // Detect likely phone extension fields and skip mapping to 'phone'
+    const isExtField = (
+      text.includes('extension') ||
+      text.includes('phoneextension') ||
+      /(^|\s)ext(\s|$)/.test(text)
+    );
+    for (const [key, kw] of KEYWORDS) {
+      if (text.includes(kw)) {
+        if (key === 'phone' && isExtField) continue; // skip phone extension
+        return key;
+      }
+    }
     const t = norm(el.getAttribute('type') || '');
-    if (/^tel$|phone/.test(t)) return 'phone';
+    if (/^tel$|phone/.test(t) && !isExtField) return 'phone';
     if (/^email$/.test(t)) return 'email';
     return null;
   }
@@ -94,8 +117,26 @@
     if (tag === 'select') {
       const options = Array.from(el.options || []);
       const nv = norm(value);
-      let m = options.find(o => norm(o.value) === nv) || options.find(o => norm(o.textContent) === nv);
-      if (!m) m = options.find(o => norm(o.textContent).includes(nv)) || options.find(o => nv.includes(norm(o.textContent)));
+      const candidates = (() => {
+        const arr = [nv];
+        try {
+          const k = keyForElement(el);
+          if (k === 'state') {
+            // Add abbreviation/full-name alternatives
+            const abbr = US_STATE_NAME_TO_ABBR[nv];
+            const full = US_STATE_MAP[nv];
+            if (abbr) arr.push(abbr);
+            if (full) arr.push(full);
+          }
+        } catch {}
+        return Array.from(new Set(arr));
+      })();
+      let m = null;
+      for (const cand of candidates) {
+        m = options.find(o => norm(o.value) === cand) || options.find(o => norm(o.textContent) === cand);
+        if (!m) m = options.find(o => norm(o.textContent).includes(cand)) || options.find(o => cand.includes(norm(o.textContent)));
+        if (m) break;
+      }
       if (m) { el.value = m.value; el.dispatchEvent(new Event('change', { bubbles: true })); return true; }
       return false;
     }
@@ -153,7 +194,44 @@
         }
       }
     }
-    return count + fillGeneric(profile);
+    // Fill Country Phone Code using profile.phoneCountryCode (default +1)
+    const phoneCode = profile.phoneCountryCode || '+1';
+    if (phoneCode) {
+      let codeEl = null;
+      const hostIds = ['countryPhoneCode','phoneCountryCode','phoneCountry','countryDialCode','dialCode'];
+      for (const id of hostIds) {
+        const host = document.querySelector(`[data-automation-id="${id}"]`);
+        if (host) { codeEl = host.querySelector('select, input'); if (codeEl) break; }
+      }
+      if (!codeEl) {
+        // Fallback: find a select/input whose label/attrs suggest phone code
+        const cands = Array.from(document.querySelectorAll('select, input'));
+        codeEl = cands.find(e => {
+          const bag = [];
+          for (const a of ATTRS) { const v = e.getAttribute(a); if (v) bag.push(v); }
+          bag.push(getLabelText(e));
+          const t = strip(bag.filter(Boolean).join(' | '));
+          return t.includes('phone code') || t.includes('country phone code') || t.includes('dial code') || t.includes('country code');
+        }) || null;
+      }
+      if (codeEl) {
+        const nv = norm(phoneCode);
+        const digits = nv.replace(/[^0-9]/g, '');
+        const candidates = Array.from(new Set([
+          nv,
+          digits ? ('+'+digits) : null,
+          digits || null
+        ].filter(Boolean)));
+        let ok = false;
+        if (codeEl.tagName.toLowerCase() === 'select') {
+          for (const cand of candidates) { if (setInputValue(codeEl, cand)) { ok = true; break; } }
+        }
+        if (!ok) setInputValue(codeEl, phoneCode);
+        if (ok) count++;
+      }
+    }
+    // Workday tweak: avoid generic fallback to reduce unintended fills
+    return count;
   }
 
   function icimsDetect() { return /icims\.com/.test(location.host); }
@@ -166,7 +244,19 @@
       ['phone', 'input[type="tel"], input[name*="phone" i], input[id*="phone" i]']
     ];
     for (const [k, sel] of pairs) {
-      const el = document.querySelector(sel);
+      let el = document.querySelector(sel);
+      // For phone, prefer non-extension candidates
+      if (k === 'phone') {
+        const cands = Array.from(document.querySelectorAll(sel));
+        const nonExt = cands.find(e => {
+          const bag = [];
+          for (const a of ATTRS) { const v = e.getAttribute(a); if (v) bag.push(v); }
+          bag.push(getLabelText(e));
+          const text = strip(bag.filter(Boolean).join(' | '));
+          return !(text.includes('extension') || /(^|\s)ext(\s|$)/.test(text));
+        });
+        if (nonExt) el = nonExt;
+      }
       if (el && profile[k]) if (setInputValue(el, profile[k])) count++;
     }
     return count + fillGeneric(profile);
@@ -231,6 +321,7 @@
         <div class="row"><label>Last</label><input id="aa_lastName" type="text" /></div>
         <div class="row"><label>Email</label><input id="aa_email" type="email" /></div>
         <div class="row"><label>Phone</label><input id="aa_phone" type="tel" /></div>
+        <div class="row"><label>Phone Code</label><input id="aa_phoneCountryCode" type="text" /></div>
         <div class="row"><label>Address1</label><input id="aa_address1" type="text" /></div>
         <div class="row"><label>Address2</label><input id="aa_address2" type="text" /></div>
         <div class="row"><label>City</label><input id="aa_city" type="text" /></div>
@@ -256,7 +347,7 @@
     shadow.appendChild(wrap);
 
     const qs = id => shadow.getElementById(id);
-    const FIELDS = ['firstName','lastName','email','phone','address1','address2','city','state','postalCode','country','linkedin','github','website'];
+    const FIELDS = ['firstName','lastName','email','phone','phoneCountryCode','address1','address2','city','state','postalCode','country','linkedin','github','website'];
 
     function loadUI() {
       const p = storage.getProfile();
