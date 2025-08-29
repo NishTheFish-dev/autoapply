@@ -355,6 +355,19 @@
     });
   }
 
+  function fillInFrames(profile) {
+    let total = 0;
+    const iframes = Array.from(document.querySelectorAll('iframe'));
+    for (const fr of iframes) {
+      try {
+        const doc = fr.contentDocument || (fr.contentWindow && fr.contentWindow.document);
+        if (!doc) continue;
+        total += fillGeneric(profile, doc);
+      } catch (_) { /* cross-origin, ignore */ }
+    }
+    return total;
+  }
+
   function fillGeneric(profile, root=document) {
     let count = 0;
     const gradParts = parseDateParts(profile.graduationDate || '');
@@ -377,7 +390,7 @@
   }
 
   // --- Vendor helpers ---
-  function workdayDetect() { return /workday|myworkdayjobs/.test(location.host) || document.querySelector('[data-automation-id]'); }
+  function workdayDetect() { return /workday|myworkdayjobs/.test(location.host); }
   function workdayFill(profile) {
     let count = 0;
     const map = [
@@ -515,11 +528,36 @@
   }
 
   async function fillNow(trigger='manual') {
-    const profile = storage.getProfile();
+    let profile = storage.getProfile();
+    // Merge in current UI values so users don't have to click Save before filling
+    try {
+      const shadow = ui?.shadow;
+      if (shadow) {
+        const nodes = shadow.querySelectorAll('input[id^="aa_"], textarea[id^="aa_"], select[id^="aa_"]');
+        const uiProfile = {};
+        const allowed = new Set(Object.keys(DEFAULT_PROFILE));
+        nodes.forEach(n => {
+          const id = n.id || '';
+          if (id.startsWith('aa_')) {
+            const key = id.slice(3);
+            if (allowed.has(key)) uiProfile[key] = (n.value || '').trim();
+          }
+        });
+        profile = { ...profile, ...uiProfile };
+      }
+    } catch {}
     const vendor = getVendor();
-    const count = vendor.fill(profile);
-    log(`Filled ${count} fields via ${vendor.id} (${trigger})`);
-    ui?.flash(`Filled ${count} fields (${vendor.id})`);
+    let count = vendor.fill(profile);
+    let label = vendor.id;
+    if (count === 0 && vendor.id !== 'generic') {
+      const gc = fillGeneric(profile);
+      if (gc > 0) { count = gc; label = `${vendor.id}→generic`; }
+    }
+    // Try to also fill any same-origin iframes generically
+    const fc = fillInFrames(profile);
+    if (fc > 0) { count += fc; label += `+frames`; }
+    log(`Filled ${count} fields via ${label} (${trigger})`);
+    ui?.flash(`Filled ${count} fields (${label})`);
     return count;
   }
 
@@ -668,9 +706,11 @@
   }
 
   // --- Observers and routing ---
-  const debouncedFill = (() => { let t; return () => { clearTimeout(t); t = setTimeout(() => fillNow('auto'), 600); }; })();
+  const debouncedFill = (() => { let t; return () => { clearTimeout(t); t = setTimeout(() => { if (storage.getSettings().autoEnabled) fillNow('auto'); }, 600); }; })();
+  let observersReady = false;
   function setupObservers() {
-    const s = storage.getSettings(); if (!s.autoEnabled) return;
+    if (observersReady) return; // attach once
+    observersReady = true;
     const mo = new MutationObserver(muts => { for (const m of muts) if (m.addedNodes && m.addedNodes.length) { debouncedFill(); break; } });
     mo.observe(document.documentElement, { childList: true, subtree: true });
     const emit = () => window.dispatchEvent(new Event('aa:route'));
