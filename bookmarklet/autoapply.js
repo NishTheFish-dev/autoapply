@@ -14,7 +14,12 @@
   // --- Storage (localStorage) ---
   const LS_KEYS = { profile: 'aa_profile_v1', settings: 'aa_settings_v1' };
   const DEFAULT_PROFILE = {
-    firstName: '', lastName: '', email: '', phone: '', phoneCountryCode: '+1', address1: '', address2: '', city: '', state: '', postalCode: '', country: '', linkedin: '', github: '', website: ''
+    // Basics
+    firstName: '', lastName: '', email: '', phone: '', phoneCountryCode: '+1', address1: '', address2: '', city: '', state: '', postalCode: '', country: '', linkedin: '', github: '', website: '', graduationDate: '',
+    // Job Specific
+    currentCompany: '', currentTitle: '', yearsExperience: '', workAuthorization: '', sponsorshipRequired: '', salaryExpectation: '', noticePeriod: '', availableStartDate: '', relocationPreference: '', remotePreference: '', travelPercentage: '', desiredLocations: '', securityClearance: '',
+    // Demographic
+    gender: '', raceEthnicity: '', veteranStatus: '', disabilityStatus: '', pronouns: ''
   };
   const DEFAULT_SETTINGS = { autoEnabled: false };
   const storage = {
@@ -40,10 +45,122 @@
     country: ['country'],
     linkedin: ['linkedin','linkedin url','linkedin profile'],
     github: ['github','github url'],
-    website: ['website','portfolio','personal site','portfolio url','site','blog','homepage']
+    website: ['website','portfolio','personal site','portfolio url','site','blog','homepage'],
+    // Education
+    graduationDate: ['graduation date','expected graduation date','anticipated graduation','degree completion date','grad date','expected graduation'],
+    graduationMonth: ['graduation month','month of graduation','grad month'],
+    graduationYear: ['graduation year','year of graduation','grad year'],
+    graduationDay: ['graduation day','day of graduation','grad day'],
+    // Job Specific
+    currentCompany: ['current company','current employer','present employer','employer','company'],
+    currentTitle: ['current title','job title','present title','role','position','designation'],
+    yearsExperience: ['years of experience','total experience','overall experience','experience (years)','experience years','experience'],
+    workAuthorization: ['work authorization','work permit','work eligibility','authorized to work','eligible to work','citizenship status','citizenship'],
+    sponsorshipRequired: ['require sponsorship','requires sponsorship','need sponsorship','visa sponsorship','sponsorship needed','work visa sponsorship'],
+    salaryExpectation: ['salary expectation','expected salary','desired salary','salary requirements','compensation expectation','expected compensation','pay expectation'],
+    noticePeriod: ['notice period','notice','time to join','joining time','availability notice'],
+    availableStartDate: ['available start date','start date','availability date','earliest start date','date available'],
+    relocationPreference: ['relocation','willing to relocate','relocation preference','relocate'],
+    remotePreference: ['remote','hybrid','on-site','onsite','work preference','work arrangement'],
+    travelPercentage: ['travel','travel percentage','willing to travel','percentage of travel','travel requirement'],
+    desiredLocations: ['preferred location','location preference','desired location','preferred locations','location(s)'],
+    securityClearance: ['security clearance','clearance','clearance level'],
+    // Demographic
+    gender: ['gender'],
+    raceEthnicity: ['race','ethnicity','race/ethnicity','race ethnicity'],
+    veteranStatus: ['veteran','veteran status','protected veteran'],
+    disabilityStatus: ['disability','disability status','self-identify disability'],
+    pronouns: ['pronouns']
   };
   const KEYWORDS = Object.entries(SYNONYMS).flatMap(([k, arr]) => arr.map(a => [k, strip(a)]));
   const ATTRS = ['name','id','placeholder','aria-label','data-automation-id','data-testid'];
+
+  // Month helpers
+  const MONTH_NAMES = ['january','february','march','april','may','june','july','august','september','october','november','december'];
+  function monthCandidatesFrom(nv) {
+    const t = nv.replace(/[^a-z0-9]/g, '');
+    const out = new Set();
+    // numeric
+    const digits = nv.replace(/[^0-9]/g, '');
+    if (digits) {
+      const n = parseInt(digits, 10);
+      if (n >= 1 && n <= 12) {
+        const mm = (n < 10 ? '0' : '') + n;
+        out.add(String(n)); out.add(mm);
+        out.add(MONTH_NAMES[n-1]);
+        out.add(MONTH_NAMES[n-1].slice(0,3));
+      }
+    }
+    // names
+    const nameIdx = MONTH_NAMES.findIndex(m => m === t || m.slice(0,3) === t);
+    if (nameIdx >= 0) {
+      const n = nameIdx + 1;
+      const mm = (n < 10 ? '0' : '') + n;
+      out.add(String(n)); out.add(mm);
+      out.add(MONTH_NAMES[nameIdx]);
+      out.add(MONTH_NAMES[nameIdx].slice(0,3));
+    }
+    return Array.from(out);
+  }
+
+  // Flexible date parsing (best-effort) for MM/DD/YYYY-like inputs
+  function parseDateParts(s) {
+    if (!s) return null; const str = (''+s).trim(); if (!str) return null;
+    const nums = str.match(/\d+/g) || [];
+    let mm = '01', dd = '01', yyyy = '';
+    if (nums.length >= 3) { mm = nums[0]; dd = nums[1]; yyyy = nums[2]; }
+    else if (nums.length === 2) {
+      // Prefer MM + YYYY if 2nd is 4 digits
+      if (nums[1].length === 4) { mm = nums[0]; yyyy = nums[1]; }
+      else if (nums[0].length === 4) { yyyy = nums[0]; mm = nums[1]; }
+      else { mm = nums[0]; yyyy = (nums[1].length === 2 ? ('20'+nums[1]) : nums[1]); }
+    } else if (nums.length === 1) {
+      if (nums[0].length === 4) { yyyy = nums[0]; }
+      else { mm = nums[0]; yyyy = ''; }
+    }
+    // Pad
+    const nmm = Math.max(1, Math.min(12, parseInt(mm||'1',10)||1));
+    const ndd = Math.max(1, Math.min(31, parseInt(dd||'1',10)||1));
+    const pmm = (nmm < 10 ? '0' : '') + nmm;
+    const pdd = (ndd < 10 ? '0' : '') + ndd;
+    if (!yyyy) return { mm: pmm, dd: pdd, yyyy: '' };
+    if (yyyy.length === 2) yyyy = '20' + yyyy;
+    return { mm: pmm, dd: pdd, yyyy };
+  }
+
+  function formatGradForInput(el, parts) {
+    const bag = [];
+    for (const a of ATTRS) { const v = el.getAttribute(a); if (v) bag.push(v); }
+    bag.push(getLabelText(el));
+    const hint = bag.filter(Boolean).join(' | ').toLowerCase();
+    const { mm, dd, yyyy } = parts;
+    const type = (el.type || 'text').toLowerCase();
+    if (type === 'date') { return yyyy ? `${yyyy}-${mm}-${dd}` : ''; }
+    if (type === 'month') { return yyyy ? `${yyyy}-${mm}` : ''; }
+    // Detect patterns by placeholder/text
+    if (/dd\s*\/\s*mm\s*\/\s*yyyy|dd[- ]mm[- ]yyyy/.test(hint)) {
+      return yyyy ? `${dd}/${mm}/${yyyy}` : `${dd}/${mm}`;
+    }
+    if (/mm\s*\/\s*yyyy|mm[- ]yyyy|month\s*\/\s*year|month[- ]year/.test(hint)) {
+      return yyyy ? `${mm}/${yyyy}` : mm;
+    }
+    if (/yyyy[- \/]mm[- \/]dd/.test(hint)) {
+      return yyyy ? `${yyyy}-${mm}-${dd}` : (yyyy ? `${yyyy}-${mm}` : mm);
+    }
+    if (/yyyy[- \/]mm/.test(hint)) {
+      return yyyy ? `${yyyy}-${mm}` : mm;
+    }
+    // Default US
+    return yyyy ? `${mm}/${dd}/${yyyy}` : (mm && dd ? `${mm}/${dd}` : (yyyy || mm));
+  }
+
+  function truthyFromString(s) {
+    const t = norm(s);
+    if (!t) return null;
+    if (['y','yes','true','1','on','checked'].includes(t)) return true;
+    if (['n','no','false','0','off','unchecked'].includes(t)) return false;
+    return null;
+  }
 
   // US state mapping for abbreviation/full-name cross-matching
   const US_STATE_MAP = {
@@ -106,7 +223,75 @@
     const tag = el.tagName.toLowerCase();
     if (tag === 'input' || tag === 'textarea') {
       const type = (el.type || 'text').toLowerCase();
-      if (['radio','checkbox','file'].includes(type)) return false;
+      const k = keyForElement(el);
+      // Radios
+      if (type === 'radio') {
+        const nv = norm(value);
+        if (!nv) return false;
+        const name = el.getAttribute('name');
+        const group = name ? Array.from(document.querySelectorAll(`input[type="radio"][name="${CSS.escape(name)}"]`)) : [el];
+        // candidates: exact value or label match; also yes/no normalization
+        const yn = truthyFromString(nv);
+        const cands = new Set([nv]);
+        if (yn === true) { cands.add('yes'); cands.add('y'); cands.add('true'); cands.add('1'); }
+        if (yn === false) { cands.add('no'); cands.add('n'); cands.add('false'); cands.add('0'); }
+        let picked = null;
+        for (const r of group) {
+          const bag = [];
+          for (const a of ATTRS) { const v = r.getAttribute(a); if (v) bag.push(v); }
+          bag.push(getLabelText(r));
+          const text = strip(bag.filter(Boolean).join(' | '));
+          if (cands.has(text) || cands.has(strip(r.value || ''))) { picked = r; break; }
+          // partial includes if obvious
+          for (const c of cands) { if (!picked && (text.includes(c) || strip(r.value||'').includes(c))) { picked = r; break; } }
+          if (picked) break;
+        }
+        if (picked) {
+          const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'checked');
+          if (desc && desc.set) desc.set.call(picked, true); else picked.checked = true;
+          picked.dispatchEvent(new Event('input', { bubbles: true }));
+          picked.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        }
+        return false;
+      }
+      // Checkboxes
+      if (type === 'checkbox') {
+        const nv = norm(value);
+        const yn = truthyFromString(nv);
+        const bag = [];
+        for (const a of ATTRS) { const v = el.getAttribute(a); if (v) bag.push(v); }
+        bag.push(getLabelText(el));
+        const text = strip(bag.filter(Boolean).join(' | '));
+        let shouldCheck = yn === true;
+        if (yn === null && nv) {
+          const tokens = nv.split(/[,;|]/).map(t => strip(t)).filter(Boolean);
+          if (tokens.length) {
+            const valueText = strip(el.value || '');
+            shouldCheck = tokens.some(t => text.includes(t) || valueText.includes(t));
+          }
+        }
+        const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'checked');
+        const newVal = !!shouldCheck;
+        if (el.checked === newVal) return false;
+        if (desc && desc.set) desc.set.call(el, newVal); else el.checked = newVal;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+      }
+      if (type === 'file') return false;
+      // Graduation date special handling
+      if (k === 'graduationDate') {
+        const parts = parseDateParts(value);
+        const v = parts ? formatGradForInput(el, parts) : value;
+        const proto = tag === 'input' ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
+        const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+        const newVal = v;
+        if (desc && desc.set) desc.set.call(el, newVal); else el.value = newVal;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+      }
       const proto = tag === 'input' ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
       const desc = Object.getOwnPropertyDescriptor(proto, 'value');
       if (desc && desc.set) desc.set.call(el, value); else el.value = value;
@@ -127,6 +312,17 @@
             const full = US_STATE_MAP[nv];
             if (abbr) arr.push(abbr);
             if (full) arr.push(full);
+          } else if (k === 'graduationMonth') {
+            for (const c of monthCandidatesFrom(nv)) arr.push(c);
+          } else if (k === 'graduationYear') {
+            // allow 2-digit or 4-digit matching
+            const digits = (value||'').replace(/[^0-9]/g, '');
+            if (digits.length === 4) arr.push(digits.slice(2));
+            if (digits.length === 2) arr.push('20' + digits);
+          } else if (k === 'graduationDay') {
+            // day with/without leading zero
+            const d = (value||'').replace(/[^0-9]/g, '');
+            if (d) { const n = parseInt(d,10); if (n>=1 && n<=31) { const dd = (n<10?'0':'')+n; arr.push(String(n)); arr.push(dd); } }
           }
         } catch {}
         return Array.from(new Set(arr));
@@ -161,9 +357,21 @@
 
   function fillGeneric(profile, root=document) {
     let count = 0;
+    const gradParts = parseDateParts(profile.graduationDate || '');
+    const gradDerived = gradParts ? {
+      graduationMonth: gradParts.mm,
+      graduationYear: gradParts.yyyy,
+      graduationDay: gradParts.dd
+    } : null;
     for (const el of findAllInputs(root)) {
       const k = keyForElement(el);
-      if (k && profile[k]) { if (setInputValue(el, profile[k])) count++; }
+      if (!k) continue;
+      let val = profile[k];
+      // If separate grad fields are present, derive from graduationDate
+      if (!val && gradDerived && (k === 'graduationMonth' || k === 'graduationYear' || k === 'graduationDay')) {
+        val = gradDerived[k] || '';
+      }
+      if (val) { if (setInputValue(el, val)) count++; }
     }
     return count;
   }
@@ -234,6 +442,43 @@
     return count;
   }
 
+  function oracleDetect() {
+    return /oraclecloud\.com/i.test(location.host);
+  }
+  function oracleFill(profile) {
+    let count = 0;
+    // Try to fill phone country code explicitly (Oracle often has a separate control)
+    const phoneCode = profile.phoneCountryCode || '';
+    if (phoneCode) {
+      let codeEl = null;
+      // Look for selects/inputs whose label or attributes imply country/phone code
+      const cands = Array.from(document.querySelectorAll('select, input'));
+      codeEl = cands.find(e => {
+        const bag = [];
+        for (const a of ATTRS) { const v = e.getAttribute(a); if (v) bag.push(v); }
+        bag.push(getLabelText(e));
+        const t = strip(bag.filter(Boolean).join(' | '));
+        return t.includes('phone code') || t.includes('country code') || t.includes('dial code') || t.includes('country phone code');
+      }) || null;
+      if (codeEl) {
+        const digits = (phoneCode+'').replace(/[^0-9]/g, '');
+        const candidates = Array.from(new Set([
+          phoneCode,
+          digits ? ('+'+digits) : null,
+          digits || null
+        ].filter(Boolean)));
+        let ok = false;
+        if (codeEl.tagName.toLowerCase() === 'select') {
+          for (const cand of candidates) { if (setInputValue(codeEl, cand)) { ok = true; break; } }
+        }
+        if (!ok) { ok = setInputValue(codeEl, phoneCode); }
+        if (ok) count++;
+      }
+    }
+    // Use generic engine for the rest (Oracle inputs have usable labels/attrs)
+    return count + fillGeneric(profile);
+  }
+
   function icimsDetect() { return /icims\.com/.test(location.host); }
   function icimsFill(profile) {
     let count = 0;
@@ -263,6 +508,7 @@
   }
 
   function getVendor() {
+    try { if (oracleDetect()) return { id: 'oracle', fill: oracleFill }; } catch {}
     try { if (workdayDetect()) return { id: 'workday', fill: workdayFill }; } catch {}
     try { if (icimsDetect()) return { id: 'icims', fill: icimsFill }; } catch {}
     return { id: 'generic', fill: p => fillGeneric(p) };
@@ -292,8 +538,9 @@
       *, *::before, *::after { box-sizing: border-box; }
       .card { width: 320px; background: #121212ee; color: #fff; font-family: system-ui, Segoe UI, Roboto, Arial, sans-serif; border: 1px solid #ffffff1f; border-radius: 10px; box-shadow: 0 6px 20px rgba(0,0,0,.35); overflow: hidden; backdrop-filter: blur(6px); }
       .hdr { display:flex; align-items:center; justify-content:space-between; padding:10px 12px; background: linear-gradient(180deg, #1a73e8, #1765c6); color:#fff; font-weight:600; }
-      .body { padding: 10px 12px; background: #1c1c1ce6; }
+      .body { padding: 10px 12px; background: #1c1c1ce6; max-height: 70vh; overflow: auto; }
       .row { display:grid; grid-template-columns: 110px 1fr; gap: 8px; align-items:center; margin:6px 0; }
+      .section { margin-top: 10px; padding-top: 6px; border-top: 1px solid #ffffff1a; font-size: 11px; letter-spacing:.5px; text-transform: uppercase; opacity:.85; }
       label { font-size: 12px; opacity:.9; }
       input[type=text], input[type=email], input[type=tel] { width:100%; padding:8px; border-radius:8px; border:1px solid #ffffff2a; background:#111; color:#fff; }
       .ctrls { display:flex; gap:8px; margin-top:8px; }
@@ -317,6 +564,7 @@
         <button class="close" title="Close">✕</button>
       </div>
       <div class="body">
+        <div class="section">Basics</div>
         <div class="row"><label>First</label><input id="aa_firstName" type="text" /></div>
         <div class="row"><label>Last</label><input id="aa_lastName" type="text" /></div>
         <div class="row"><label>Email</label><input id="aa_email" type="email" /></div>
@@ -331,6 +579,29 @@
         <div class="row"><label>LinkedIn</label><input id="aa_linkedin" type="text" /></div>
         <div class="row"><label>GitHub</label><input id="aa_github" type="text" /></div>
         <div class="row"><label>Website</label><input id="aa_website" type="text" /></div>
+        <div class="row"><label>Graduation Date</label><input id="aa_graduationDate" type="text" placeholder="MM/DD/YYYY" /></div>
+
+        <div class="section">Job Specific</div>
+        <div class="row"><label>Current Company</label><input id="aa_currentCompany" type="text" /></div>
+        <div class="row"><label>Current Title</label><input id="aa_currentTitle" type="text" /></div>
+        <div class="row"><label>Years Experience</label><input id="aa_yearsExperience" type="text" /></div>
+        <div class="row"><label>Work Authorization</label><input id="aa_workAuthorization" type="text" /></div>
+        <div class="row"><label>Sponsorship Required</label><input id="aa_sponsorshipRequired" type="text" /></div>
+        <div class="row"><label>Salary Expectation</label><input id="aa_salaryExpectation" type="text" /></div>
+        <div class="row"><label>Notice Period</label><input id="aa_noticePeriod" type="text" /></div>
+        <div class="row"><label>Available Start Date</label><input id="aa_availableStartDate" type="text" /></div>
+        <div class="row"><label>Relocation Preference</label><input id="aa_relocationPreference" type="text" /></div>
+        <div class="row"><label>Remote Preference</label><input id="aa_remotePreference" type="text" /></div>
+        <div class="row"><label>Travel %</label><input id="aa_travelPercentage" type="text" /></div>
+        <div class="row"><label>Desired Locations</label><input id="aa_desiredLocations" type="text" /></div>
+        <div class="row"><label>Security Clearance</label><input id="aa_securityClearance" type="text" /></div>
+
+        <div class="section">Demographic</div>
+        <div class="row"><label>Gender</label><input id="aa_gender" type="text" /></div>
+        <div class="row"><label>Race/Ethnicity</label><input id="aa_raceEthnicity" type="text" /></div>
+        <div class="row"><label>Veteran Status</label><input id="aa_veteranStatus" type="text" /></div>
+        <div class="row"><label>Disability Status</label><input id="aa_disabilityStatus" type="text" /></div>
+        <div class="row"><label>Pronouns</label><input id="aa_pronouns" type="text" /></div>
         <div class="ctrls grid2">
           <button id="aa_fill" class="primary">Fill now</button>
           <button id="aa_save">Save</button>
@@ -347,7 +618,14 @@
     shadow.appendChild(wrap);
 
     const qs = id => shadow.getElementById(id);
-    const FIELDS = ['firstName','lastName','email','phone','phoneCountryCode','address1','address2','city','state','postalCode','country','linkedin','github','website'];
+    const FIELDS = [
+      // Basics
+      'firstName','lastName','email','phone','phoneCountryCode','address1','address2','city','state','postalCode','country','linkedin','github','website','graduationDate',
+      // Job Specific
+      'currentCompany','currentTitle','yearsExperience','workAuthorization','sponsorshipRequired','salaryExpectation','noticePeriod','availableStartDate','relocationPreference','remotePreference','travelPercentage','desiredLocations','securityClearance',
+      // Demographic
+      'gender','raceEthnicity','veteranStatus','disabilityStatus','pronouns'
+    ];
 
     function loadUI() {
       const p = storage.getProfile();
