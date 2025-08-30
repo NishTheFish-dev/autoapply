@@ -51,7 +51,7 @@
     website: ['website','portfolio','personal site','portfolio url','site','blog','homepage'],
     hearAboutUs: ['how did you hear about us','how did you hear','referral source','source','how you heard','where did you hear about us','how heard'],
     phoneDeviceType: ['phone device type','phone type','telephone type','device type of phone','mobile type'],
-    previouslyWorkedHere: ['previously worked','worked for','former employee','ever worked here','previously employed','past employee','worked here before'],
+    previouslyWorkedHere: ['previously worked','worked for','former employee','ever worked here','previously employed','past employee','worked here before','previous worker','former worker','previous employee','candidate is previous worker'],
     // Education
     graduationDate: ['graduation date','expected graduation date','anticipated graduation','degree completion date','grad date','expected graduation'],
     graduationMonth: ['graduation month','month of graduation','grad month'],
@@ -558,7 +558,7 @@
     }
     // Handle ARIA radio groups and button-based Yes/No
     if (!['input','select','textarea'].includes(tag)) {
-      if (role === 'radiogroup' || role === 'radio' || el.closest('[role="radiogroup"]')) {
+      if (role === 'radiogroup' || role === 'radio' || el.closest('[role="radiogroup"]') || (el.querySelector && el.querySelector('input[type="radio"], [role="radio"]'))) {
         const ok = attemptAriaRadioSelect(el, value);
         if (ok) return true;
       }
@@ -598,10 +598,32 @@
           if (picked) break;
         }
         if (picked) {
-          const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'checked');
-          if (desc && desc.set) desc.set.call(picked, true); else picked.checked = true;
-          picked.dispatchEvent(new Event('input', { bubbles: true }));
-          picked.dispatchEvent(new Event('change', { bubbles: true }));
+          // Prefer clicking the associated label or the radio itself to trigger framework handlers
+          try {
+            const pid = picked.getAttribute('id');
+            const lab = pid ? document.querySelector(`label[for="${CSS.escape(pid)}"]`) : null;
+            if (lab && visible(lab)) { clickLikeUser(lab); } else { clickLikeUser(picked); }
+          } catch {}
+          // If still not selected, try clicking common wrappers around hidden radios
+          try {
+            if (!picked.checked) {
+              const wrappers = [];
+              try { const rr = picked.closest('[role="radio"]'); if (rr) wrappers.push(rr); } catch {}
+              try { if (picked.parentElement) wrappers.push(picked.parentElement); } catch {}
+              try { const lab = picked.getAttribute('id') ? document.querySelector(`label[for="${CSS.escape(picked.getAttribute('id'))}"]`) : null; if (lab) wrappers.push(lab); } catch {}
+              try { const btn = picked.closest('button, [role="button"]'); if (btn) wrappers.push(btn); } catch {}
+              for (const w of wrappers) { if (w && visible(w)) { clickLikeUser(w); if (picked.checked) break; } }
+            }
+          } catch {}
+          // Ensure state is set and events fire even if clicks were ignored
+          try {
+            const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'checked');
+            if (desc && desc.set) desc.set.call(picked, true); else picked.checked = true;
+            // Keep aria-checked in sync for frameworks that style off it
+            try { picked.setAttribute('aria-checked', 'true'); } catch {}
+          } catch {}
+          try { picked.dispatchEvent(new Event('input', { bubbles: true })); } catch {}
+          try { picked.dispatchEvent(new Event('change', { bubbles: true })); } catch {}
           return true;
         }
         return false;
@@ -704,6 +726,16 @@
     return rect.width > 0 && rect.height > 0;
   }
 
+  // Simulate a realistic user click sequence for better framework compatibility
+  function clickLikeUser(node) {
+    if (!node) return;
+    try { node.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); } catch {}
+    try { node.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); } catch {}
+    try { node.dispatchEvent(new PointerEvent('pointerup', { bubbles: true })); } catch {}
+    try { node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); } catch {}
+    try { node.click(); } catch {}
+  }
+
   function findAllInputs(root=document) {
     return Array.from(root.querySelectorAll('input, textarea, select, [role="combobox"], [aria-haspopup*="listbox"], [role="radiogroup"], [role="radio"]')).filter(el => {
       const type = (el.type || '').toLowerCase();
@@ -711,11 +743,27 @@
         (el.getAttribute && (el.getAttribute('role') || '').toLowerCase() === 'combobox') ||
         ((el.getAttribute && (el.getAttribute('aria-haspopup') || '').toLowerCase().includes('listbox')) || !!(el.getAttribute && el.getAttribute('aria-controls')))
       );
+      const isRadio = type === 'radio';
       if (['hidden','submit','image','reset','file'].includes(type)) return false;
       if (type === 'button' && !isComboHost) return false; // allow button if it hosts a listbox/combobox
       if (el.disabled || el.readOnly) return false;
       if (el.getAttribute && (el.getAttribute('aria-disabled') === 'true' || el.getAttribute('aria-readonly') === 'true')) return false;
-      return visible(el);
+      if (visible(el)) return true;
+      // Many frameworks visually hide native radios; include them if their label or wrapper is visible
+      if (isRadio) {
+        try {
+          const id = el.getAttribute('id');
+          if (id) {
+            const lab = document.querySelector(`label[for="${CSS.escape(id)}"]`);
+            if (lab && visible(lab)) return true;
+          }
+        } catch {}
+        try {
+          const wrap = el.closest && el.closest('[role="radiogroup"], label, span, div');
+          if (wrap && visible(wrap)) return true;
+        } catch {}
+      }
+      return false;
     });
   }
 
@@ -732,6 +780,9 @@
     if (!items.length) {
       try { items = Array.from(group.querySelectorAll('input[type="radio"]')); } catch {}
     }
+    // Also consider labels that control radios, useful when inputs are hidden
+    let labels = [];
+    try { labels = Array.from(group.querySelectorAll('label[for]')); } catch {}
     // Fallback to buttons if radios are not present
     if (!items.length) {
       try { items = Array.from(group.querySelectorAll('button, [role="button"]')); } catch {}
@@ -739,7 +790,7 @@
     if (!items.length && el.parentElement) {
       try { items = Array.from(el.parentElement.querySelectorAll('[role="radio"], input[type="radio"], button, [role="button"]')); } catch {}
     }
-    if (!items.length) return false;
+    if (!items.length && !labels.length) return false;
     const matchYN = (node) => {
       const t = norm((node.getAttribute && (node.getAttribute('aria-label') || node.getAttribute('title'))) || node.textContent || '');
       const v = norm((node.getAttribute && (node.getAttribute('value') || node.getAttribute('data-value'))) || '');
@@ -749,6 +800,11 @@
       return false;
     };
     let pick = items.find(matchYN) || null;
+    // Try labels if no direct item matched
+    if (!pick && labels.length) {
+      const labPick = labels.find(l => matchYN(l));
+      if (labPick) pick = labPick;
+    }
     if (!pick && items.length >= 2) {
       const y = items.find(n => norm((n.getAttribute && (n.getAttribute('aria-label')||'')) || n.textContent || '').includes('yes'));
       const n = items.find(n => norm((n.getAttribute && (n.getAttribute('aria-label')||'')) || n.textContent || '').includes('no'));
@@ -756,13 +812,37 @@
     }
     if (!pick) return false;
     try { pick.scrollIntoView({ block: 'nearest' }); } catch {}
-    if (pick.tagName && pick.tagName.toLowerCase() === 'input' && (pick.type||'').toLowerCase() === 'radio') {
+    if (pick.tagName && pick.tagName.toLowerCase() === 'label') {
+      try { clickLikeUser(pick); } catch {}
+      // Ensure its target input is checked
+      try {
+        const fid = pick.getAttribute('for');
+        if (fid) {
+          const inp = document.getElementById(fid);
+          if (inp && inp.type && inp.type.toLowerCase() === 'radio') {
+            const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'checked');
+            if (desc && desc.set) desc.set.call(inp, true); else inp.checked = true;
+            try { inp.setAttribute('aria-checked', 'true'); } catch {}
+            inp.dispatchEvent(new Event('input', { bubbles: true }));
+            inp.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+        }
+      } catch {}
+    } else if (pick.tagName && pick.tagName.toLowerCase() === 'input' && (pick.type||'').toLowerCase() === 'radio') {
+      // Try user-like click on label or radio
+      try {
+        const pid = pick.getAttribute('id');
+        const lab = pid ? document.querySelector(`label[for="${CSS.escape(pid)}"]`) : null;
+        if (lab && visible(lab)) { clickLikeUser(lab); } else { clickLikeUser(pick); }
+      } catch {}
+      // Fallback to property set + events
       const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'checked');
       if (desc && desc.set) desc.set.call(pick, true); else pick.checked = true;
+      try { pick.setAttribute('aria-checked', 'true'); } catch {}
       pick.dispatchEvent(new Event('input', { bubbles: true }));
       pick.dispatchEvent(new Event('change', { bubbles: true }));
     } else {
-      try { pick.click(); } catch {}
+      try { clickLikeUser(pick); } catch {}
     }
     return true;
   }
@@ -868,8 +948,8 @@
         }
       }
     }
-    // Additional Workday fields that are often comboboxes
-    const extraKeys = ['hearAboutUs','phoneDeviceType'];
+    // Additional Workday fields
+    const extraKeys = ['hearAboutUs','phoneDeviceType','previouslyWorkedHere'];
     for (const el of findAllInputs()) {
       const k = keyForElement(el);
       if (k && extraKeys.includes(k)) {
