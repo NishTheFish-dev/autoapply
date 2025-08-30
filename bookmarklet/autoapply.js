@@ -42,7 +42,8 @@
     city: ['city','town'],
     state: ['state','province','region'],
     postalCode: ['zip','zip code','postal','postal code'],
-    country: ['country'],
+    country: ['country','country/territory','country or territory','country/region','country or region','country territory','country region'],
+    phoneCountryCode: ['country phone code','phone country code','dial code','country dial code','phone dial code','phone code','country calling code','calling code'],
     linkedin: ['linkedin','linkedin url','linkedin profile'],
     github: ['github','github url'],
     website: ['website','portfolio','personal site','portfolio url','site','blog','homepage'],
@@ -76,7 +77,7 @@
     pronouns: ['pronouns']
   };
   const KEYWORDS = Object.entries(SYNONYMS).flatMap(([k, arr]) => arr.map(a => [k, strip(a)]));
-  const ATTRS = ['name','id','placeholder','aria-label','data-automation-id','data-testid'];
+  const ATTRS = ['name','id','placeholder','aria-label','aria-labelledby','title','data-automation-id','data-testid'];
 
   // Demographics helpers for NA -> Prefer not to answer mapping
   const DEMO_KEYS = new Set(['gender','raceEthnicity','veteranStatus','disabilityStatus','pronouns']);
@@ -185,6 +186,131 @@
     return null;
   }
 
+  // Build candidate strings for selecting options based on element context and value
+  function buildSelectCandidates(el, value) {
+    const nv = norm(value);
+    const arr = [nv];
+    try {
+      const k = keyForElement(el);
+      // Demographics N/A mapping
+      if (k && DEMO_KEYS.has(k) && isNA(value)) { for (const c of preferNotCandidates()) arr.push(c); }
+      // Generic boolean mapping
+      const yn = truthyFromString(nv);
+      if (yn === true) { arr.push('yes','y','true','1'); }
+      if (yn === false) { arr.push('no','n','false','0'); }
+      // Field-specific mappings
+      if (k === 'state') {
+        const abbr = US_STATE_NAME_TO_ABBR[nv];
+        const full = US_STATE_MAP[nv];
+        if (abbr) arr.push(abbr);
+        if (full) arr.push(full);
+      } else if (k === 'country') {
+        const c = nv.replace(/\./g, '');
+        if (['us','usa','united states','united states of america','u s','u s a'].includes(c)) {
+          arr.push('united states','united states of america','usa','us');
+        }
+        if (['uk','u k','united kingdom','great britain','britain','gb','gbr'].includes(c)) {
+          arr.push('united kingdom','uk','gb','great britain');
+        }
+        if (['uae','u a e','united arab emirates'].includes(c)) {
+          arr.push('united arab emirates','uae');
+        }
+      } else if (k === 'phoneDeviceType') {
+        if (nv === 'mobile') { arr.push('cell','cell phone','mobile phone','cellular','mobile/cell'); }
+        if (nv === 'home') { arr.push('home phone','residential'); }
+        if (nv === 'work') { arr.push('work phone','office','business'); }
+        if (nv === 'other') { arr.push('other'); }
+      } else if (k === 'phoneCountryCode') {
+        const digits = (value||'').toString().replace(/[^0-9]/g, '');
+        if (digits) { arr.push(digits); arr.push('+' + digits); }
+      } else if (k === 'graduationMonth') {
+        for (const c of monthCandidatesFrom(nv)) arr.push(c);
+      } else if (k === 'graduationYear') {
+        const digits = (value||'').replace(/[^0-9]/g, '');
+        if (digits.length === 4) arr.push(digits.slice(2));
+        if (digits.length === 2) arr.push('20' + digits);
+      } else if (k === 'graduationDay') {
+        const d = (value||'').replace(/[^0-9]/g, '');
+        if (d) { const n = parseInt(d,10); if (n>=1 && n<=31) { const dd = (n<10?'0':'')+n; arr.push(String(n)); arr.push(dd); } }
+      }
+    } catch {}
+    return Array.from(new Set(arr));
+  }
+
+  function visibleOnPage(node) {
+    if (!node || !(node instanceof Element)) return false;
+    const s = getComputedStyle(node);
+    if (s.visibility === 'hidden' || s.display === 'none') return false;
+    const r = node.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  }
+
+  // Try to interact with ARIA combobox/popover style dropdowns (e.g., Workday)
+  function attemptComboboxSelect(el, value) {
+    const root = el.closest('[role="combobox"], [aria-haspopup="listbox"], [data-automation-id*="select"], [data-automation-id*="ComboBox"], [data-automation-id*="prompt"]') || el;
+    const open = () => {
+      // Try clicking an explicit toggle first
+      const toggler = root.querySelector('[aria-haspopup], [role="button"], button') || root;
+      try { toggler.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); } catch {}
+      try { toggler.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); } catch {}
+      try { toggler.click(); } catch {}
+      try { el.focus(); } catch {}
+      try { el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowDown' })); } catch {}
+    };
+    open();
+    const candidates = buildSelectCandidates(el, value);
+    // Try typing into the input to filter options if possible
+    try {
+      const inputEl = el.tagName && el.tagName.toLowerCase() === 'input' ? el : (root.querySelector('input') || null);
+      if (inputEl) {
+        const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+        const q = candidates[0] || (value || '');
+        if (desc && desc.set) desc.set.call(inputEl, q); else inputEl.value = q;
+        inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+    } catch {}
+    // Find likely popup/list containers
+    const ids = [el.getAttribute('aria-controls'), root.getAttribute && root.getAttribute('aria-controls')].filter(Boolean);
+    const containers = [];
+    for (const id of ids) { const node = id && document.getElementById(id); if (node) containers.push(node); }
+    containers.push(...Array.from(document.querySelectorAll('[role="listbox"]')));
+    containers.push(...Array.from(document.querySelectorAll('[data-automation-id="selectMenu"], [data-automation-id*="selectMenu"], [data-automation-id="promptOption"]')));
+    // Filter visible and prefer last (most recent popup appended to body)
+    const lists = containers.filter(visibleOnPage).slice(-3); // limit scope
+    let item = null;
+    for (const list of lists.reverse()) {
+      const opts = Array.from(list.querySelectorAll('[role="option"], [data-automation-id="promptOption"], li, div'))
+        .filter(visibleOnPage);
+      for (const cand of candidates) {
+        // Prioritize exact matches
+        item = opts.find(o => norm(o.getAttribute('data-value') || '') === cand
+                           || norm(o.getAttribute('aria-label') || '') === cand
+                           || norm(o.textContent || '') === cand);
+        if (!item) {
+          // Then partial includes
+          item = opts.find(o => {
+            const t = norm(o.textContent || '');
+            const dv = norm(o.getAttribute('data-value') || '');
+            const al = norm(o.getAttribute('aria-label') || '');
+            return t.includes(cand) || dv.includes(cand) || al.includes(cand) || cand.includes(t);
+          });
+        }
+        if (item) break;
+      }
+      if (item) break;
+    }
+    if (item) {
+      try { item.scrollIntoView({ block: 'nearest' }); } catch {}
+      try { item.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); } catch {}
+      try { item.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); } catch {}
+      try { item.click(); } catch {}
+      try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch {}
+      try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch {}
+      return true;
+    }
+    return false;
+  }
+
   // US state mapping for abbreviation/full-name cross-matching
   const US_STATE_MAP = {
     al: 'alabama', ak: 'alaska', az: 'arizona', ar: 'arkansas', ca: 'california', co: 'colorado', ct: 'connecticut',
@@ -213,6 +339,17 @@
       for (let i=0; i<3 && node; i++, node=node.parentElement) {
         const prev = node.previousElementSibling;
         if (prev && ['LABEL','DIV','SPAN','P'].includes(prev.tagName)) { t = prev.textContent || ''; if (t) break; }
+      }
+    }
+    if (!t) {
+      const al = el.getAttribute('aria-labelledby');
+      if (al) {
+        const ids = al.split(/\s+/).filter(Boolean);
+        const texts = ids.map(i => {
+          const n = document.getElementById(i);
+          return n ? (n.textContent || '') : '';
+        }).filter(Boolean);
+        if (texts.length) t = texts.join(' ');
       }
     }
     return t;
@@ -244,6 +381,12 @@
   function setInputValue(el, value) {
     if (value == null) return false;
     const tag = el.tagName.toLowerCase();
+    // If this is a combobox/listbox host (non-input), try ARIA combobox selection
+    const role = (el.getAttribute('role') || '').toLowerCase();
+    const hasListbox = (el.getAttribute('aria-haspopup') || '').toLowerCase().includes('listbox') || !!el.getAttribute('aria-controls');
+    if ((role === 'combobox' || hasListbox) && tag !== 'input' && tag !== 'select' && tag !== 'textarea') {
+      return attemptComboboxSelect(el, value);
+    }
     if (tag === 'input' || tag === 'textarea') {
       const type = (el.type || 'text').toLowerCase();
       const k = keyForElement(el);
@@ -321,6 +464,14 @@
         el.dispatchEvent(new Event('change', { bubbles: true }));
         return true;
       }
+      // Try ARIA combobox-style dropdowns before plain text set
+      try {
+        const hintCombo = el.getAttribute('role') === 'combobox' || !!el.closest('[role="combobox"]') || (el.getAttribute('aria-haspopup')||'').includes('listbox') || !!el.getAttribute('aria-controls');
+        if (hintCombo || ['country','state','hearAboutUs','phoneDeviceType','phoneCountryCode'].includes(k || '')) {
+          if (attemptComboboxSelect(el, value)) return true;
+        }
+      } catch {}
+
       const proto = tag === 'input' ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
       const desc = Object.getOwnPropertyDescriptor(proto, 'value');
       if (desc && desc.set) desc.set.call(el, value); else el.value = value;
@@ -330,52 +481,38 @@
     }
     if (tag === 'select') {
       const options = Array.from(el.options || []);
-      const nv = norm(value);
-      const candidates = (() => {
-        const arr = [nv];
-        try {
-          const k = keyForElement(el);
-          // If user provided N/A for demographics, try prefer-not answers
-          if (k && DEMO_KEYS.has(k) && isNA(value)) { for (const c of preferNotCandidates()) arr.push(c); }
-          // Handle yes/no style selects generically
-          const yn = truthyFromString(nv);
-          if (yn === true) { arr.push('yes','y','true','1'); }
-          if (yn === false) { arr.push('no','n','false','0'); }
-          if (k === 'state') {
-            // Add abbreviation/full-name alternatives
-            const abbr = US_STATE_NAME_TO_ABBR[nv];
-            const full = US_STATE_MAP[nv];
-            if (abbr) arr.push(abbr);
-            if (full) arr.push(full);
-          } else if (k === 'phoneDeviceType') {
-            // Map device type to common option labels
-            if (nv === 'mobile') { arr.push('cell','cell phone','mobile phone','cellular','mobile/cell'); }
-            if (nv === 'home') { arr.push('home phone','residential'); }
-            if (nv === 'work') { arr.push('work phone','office','business'); }
-            if (nv === 'other') { arr.push('other'); }
-          } else if (k === 'graduationMonth') {
-            for (const c of monthCandidatesFrom(nv)) arr.push(c);
-          } else if (k === 'graduationYear') {
-            // allow 2-digit or 4-digit matching
-            const digits = (value||'').replace(/[^0-9]/g, '');
-            if (digits.length === 4) arr.push(digits.slice(2));
-            if (digits.length === 2) arr.push('20' + digits);
-          } else if (k === 'graduationDay') {
-            // day with/without leading zero
-            const d = (value||'').replace(/[^0-9]/g, '');
-            if (d) { const n = parseInt(d,10); if (n>=1 && n<=31) { const dd = (n<10?'0':'')+n; arr.push(String(n)); arr.push(dd); } }
-          }
-        } catch {}
-        return Array.from(new Set(arr));
-      })();
-      let m = null;
-      for (const cand of candidates) {
-        m = options.find(o => norm(o.value) === cand) || options.find(o => norm(o.textContent) === cand);
-        if (!m) m = options.find(o => norm(o.textContent).includes(cand)) || options.find(o => cand.includes(norm(o.textContent)));
-        if (m) break;
+      const candidates = buildSelectCandidates(el, value);
+      if (el.multiple) {
+        const tokens = (''+value).split(/[,;|]/).map(t => norm(t)).filter(Boolean);
+        const want = new Set(tokens.length ? tokens : candidates);
+        let selected = 0;
+        for (const o of options) {
+          const t = norm(o.textContent || '');
+          const v = norm(o.value || '');
+          const match = Array.from(want).some(c => c === v || c === t || t.includes(c) || v.includes(c) || c.includes(t));
+          if (match) { o.selected = true; selected++; }
+        }
+        if (selected > 0) {
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        }
+        return false;
+      } else {
+        let m = null;
+        for (const cand of candidates) {
+          m = options.find(o => norm(o.value) === cand) || options.find(o => norm(o.textContent) === cand);
+          if (!m) m = options.find(o => norm(o.textContent).includes(cand)) || options.find(o => cand.includes(norm(o.textContent)));
+          if (m) break;
+        }
+        if (m) {
+          el.value = m.value;
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        }
+        return false;
       }
-      if (m) { el.value = m.value; el.dispatchEvent(new Event('change', { bubbles: true })); return true; }
-      return false;
     }
     return false;
   }
@@ -388,10 +525,11 @@
   }
 
   function findAllInputs(root=document) {
-    return Array.from(root.querySelectorAll('input, textarea, select')).filter(el => {
+    return Array.from(root.querySelectorAll('input, textarea, select, [role="combobox"], [aria-haspopup*="listbox"]')).filter(el => {
       const type = (el.type || '').toLowerCase();
       if (['hidden','submit','button','image','reset','file'].includes(type)) return false;
       if (el.disabled || el.readOnly) return false;
+      if (el.getAttribute && (el.getAttribute('aria-disabled') === 'true' || el.getAttribute('aria-readonly') === 'true')) return false;
       return visible(el);
     });
   }
@@ -454,6 +592,15 @@
           const input = host.querySelector('input, textarea, select') || host.closest('[data-automation-id]')?.querySelector('input, textarea, select');
           if (input && setInputValue(input, val)) { count++; break; }
         }
+      }
+    }
+    // Additional Workday fields that are often comboboxes
+    const extraKeys = ['hearAboutUs','phoneDeviceType'];
+    for (const el of findAllInputs()) {
+      const k = keyForElement(el);
+      if (k && extraKeys.includes(k)) {
+        const v = profile[k];
+        if (v) { if (setInputValue(el, v)) count++; }
       }
     }
     // Fill Country Phone Code using profile.phoneCountryCode (default +1)
