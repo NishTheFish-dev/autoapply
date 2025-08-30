@@ -10,8 +10,6 @@
 
   const NS = '__AUTOAPPLY__';
   const log = (...a) => console.debug('[AutoApply]', ...a);
-  let COMBO_BUSY = false; // prevent concurrent combobox operations that can confuse frameworks like Workday
-  let FILL_PHASE = 'all'; // 'textual' | 'select' | 'combobox' | 'all'
 
   // --- Storage (localStorage) ---
   const LS_KEYS = { profile: 'aa_profile_v1', settings: 'aa_settings_v1' };
@@ -23,7 +21,7 @@
     // Demographic
     gender: '', raceEthnicity: '', veteranStatus: '', disabilityStatus: '', pronouns: ''
   };
-  const DEFAULT_SETTINGS = { autoEnabled: false, workdaySafe: true };
+  const DEFAULT_SETTINGS = { autoEnabled: false };
   const storage = {
     getProfile() { try { return { ...DEFAULT_PROFILE, ...(JSON.parse(localStorage.getItem(LS_KEYS.profile) || 'null') || {}) }; } catch { return { ...DEFAULT_PROFILE }; } },
     saveProfile(p) { localStorage.setItem(LS_KEYS.profile, JSON.stringify({ ...DEFAULT_PROFILE, ...(p || {}) })); },
@@ -88,54 +86,6 @@
     return out;
   }
 
-  // Demographics helpers for NA -> Prefer not to answer mapping
-  const DEMO_KEYS = new Set(['gender','raceEthnicity','veteranStatus','disabilityStatus','pronouns']);
-  function isNA(val) {
-    const t = norm(val);
-    return t === 'na' || t === 'n/a' || t === 'n a' || t === 'not applicable' || t === 'none';
-  }
-  function preferNotCandidates() {
-    return [
-      'prefer not to answer',
-      'prefer not to say',
-      'do not wish to provide',
-      'i do not wish to provide this information',
-      'decline to state',
-      'not specified',
-      'undisclosed',
-      'not disclosed',
-      'unknown'
-    ].map(s => norm(s));
-  }
-
-  // Month helpers
-  const MONTH_NAMES = ['january','february','march','april','may','june','july','august','september','october','november','december'];
-  function monthCandidatesFrom(nv) {
-    const t = nv.replace(/[^a-z0-9]/g, '');
-    const out = new Set();
-    // numeric
-    const digits = nv.replace(/[^0-9]/g, '');
-    if (digits) {
-      const n = parseInt(digits, 10);
-      if (n >= 1 && n <= 12) {
-        const mm = (n < 10 ? '0' : '') + n;
-        out.add(String(n)); out.add(mm);
-        out.add(MONTH_NAMES[n-1]);
-        out.add(MONTH_NAMES[n-1].slice(0,3));
-      }
-    }
-    // names
-    const nameIdx = MONTH_NAMES.findIndex(m => m === t || m.slice(0,3) === t);
-    if (nameIdx >= 0) {
-      const n = nameIdx + 1;
-      const mm = (n < 10 ? '0' : '') + n;
-      out.add(String(n)); out.add(mm);
-      out.add(MONTH_NAMES[nameIdx]);
-      out.add(MONTH_NAMES[nameIdx].slice(0,3));
-    }
-    return Array.from(out);
-  }
-
   // Flexible date parsing (best-effort) for MM/DD/YYYY-like inputs
   function parseDateParts(s) {
     if (!s) return null; const str = (''+s).trim(); if (!str) return null;
@@ -186,309 +136,6 @@
     // Default US
     return yyyy ? `${mm}/${dd}/${yyyy}` : (mm && dd ? `${mm}/${dd}` : (yyyy || mm));
   }
-
-  function truthyFromString(s) {
-    const t = norm(s);
-    if (!t) return null;
-    if (['y','yes','true','1','on','checked'].includes(t)) return true;
-    if (['n','no','false','0','off','unchecked'].includes(t)) return false;
-    return null;
-  }
-
-  // Build candidate strings for selecting options based on element context and value
-  function buildSelectCandidates(el, value) {
-    const nv = norm(value);
-    const arr = [nv];
-    try {
-      const k = keyForElement(el);
-      // Demographics N/A mapping
-      if (k && DEMO_KEYS.has(k) && isNA(value)) { for (const c of preferNotCandidates()) arr.push(c); }
-      // Generic boolean mapping
-      const yn = truthyFromString(nv);
-      if (yn === true) { arr.push('yes','y','true','1'); }
-      if (yn === false) { arr.push('no','n','false','0'); }
-      // Field-specific mappings
-      if (k === 'state') {
-        const abbr = US_STATE_NAME_TO_ABBR[nv];
-        const full = US_STATE_MAP[nv];
-        if (abbr) arr.push(abbr);
-        if (full) arr.push(full);
-      } else if (k === 'country') {
-        const c = nv.replace(/\./g, '');
-        if (['us','usa','united states','united states of america','u s','u s a'].includes(c)) {
-          arr.push('united states','united states of america','usa','us');
-        }
-        if (['uk','u k','united kingdom','great britain','britain','gb','gbr'].includes(c)) {
-          arr.push('united kingdom','uk','gb','great britain');
-        }
-        if (['uae','u a e','united arab emirates'].includes(c)) {
-          arr.push('united arab emirates','uae');
-        }
-      } else if (k === 'phoneDeviceType') {
-        if (nv === 'mobile') { arr.push('cell','cell phone','mobile phone','cellular','mobile/cell'); }
-        if (nv === 'home') { arr.push('home phone','residential'); }
-        if (nv === 'work') { arr.push('work phone','office','business'); }
-        if (nv === 'other') { arr.push('other'); }
-      } else if (k === 'phoneCountryCode') {
-        const digits = (value||'').toString().replace(/[^0-9]/g, '');
-        if (digits) { arr.push(digits); arr.push('+' + digits); }
-      } else if (k === 'graduationMonth') {
-        for (const c of monthCandidatesFrom(nv)) arr.push(c);
-      } else if (k === 'graduationYear') {
-        const digits = (value||'').replace(/[^0-9]/g, '');
-        if (digits.length === 4) arr.push(digits.slice(2));
-        if (digits.length === 2) arr.push('20' + digits);
-      } else if (k === 'graduationDay') {
-        const d = (value||'').replace(/[^0-9]/g, '');
-        if (d) { const n = parseInt(d,10); if (n>=1 && n<=31) { const dd = (n<10?'0':'')+n; arr.push(String(n)); arr.push(dd); } }
-      }
-    } catch {}
-    return Array.from(new Set(arr));
-  }
-
-  function visibleOnPage(node) {
-    if (!node || !(node instanceof Element)) return false;
-    const s = getComputedStyle(node);
-    if (s.visibility === 'hidden' || s.display === 'none') return false;
-    const r = node.getBoundingClientRect();
-    return r.width > 0 && r.height > 0;
-  }
-
-  // Wait until a condition is true or until timeout
-  function waitUntil(checkFn, timeoutMs = 3000, intervalMs = 40) {
-    return new Promise(resolve => {
-      const start = Date.now();
-      const tick = () => {
-        try { if (checkFn()) return resolve(true); } catch {}
-        if (Date.now() - start >= timeoutMs) return resolve(false);
-        setTimeout(tick, intervalMs);
-      };
-      tick();
-    });
-  }
-
-  // Try to interact with ARIA combobox/popover style dropdowns (e.g., Workday)
-  function attemptComboboxSelect(el, value) {
-    if (COMBO_BUSY) return false;
-    COMBO_BUSY = true;
-    const finish = () => { COMBO_BUSY = false; };
-    const isWD = (typeof workdayDetect === 'function') ? workdayDetect() : /workday|myworkdayjobs/.test(location.host);
-    let settings = {};
-    try { settings = (storage && storage.getSettings) ? (storage.getSettings() || {}) : {}; } catch {}
-    const wdSafe = !!(isWD && (settings.workdaySafe !== false));
-    const root = el.closest('[role="combobox"], [aria-haspopup="listbox"], [data-automation-id*="select"], [data-automation-id*="ComboBox"], [data-automation-id*="prompt"]') || el;
-    const isExpanded = () => ((root.getAttribute && root.getAttribute('aria-expanded')) || (el.getAttribute && el.getAttribute('aria-expanded')) || '').toLowerCase() === 'true';
-    const open = () => {
-      // Try clicking an explicit toggle first, but avoid closing an already-open list
-      const ariaIds = [el.getAttribute('aria-controls'), root.getAttribute && root.getAttribute('aria-controls')].filter(Boolean);
-      let toggler =
-        root.querySelector('button[aria-haspopup], [role="button"][aria-haspopup]')
-        || (root.closest && root.closest('[data-automation-id]')?.querySelector('button[aria-haspopup], [role="button"][aria-haspopup]'))
-        || (root.parentElement && root.parentElement.querySelector('button[aria-haspopup], [role="button"][aria-haspopup]'))
-        || root.querySelector('[role="button"], [aria-haspopup]')
-        || root;
-      if (ariaIds.length) {
-        try {
-          const candidates = [
-            ...Array.from(root.querySelectorAll('button[aria-haspopup], [role="button"][aria-haspopup]')),
-            ...(root.closest && root.closest('[data-automation-id]') ? Array.from(root.closest('[data-automation-id]').querySelectorAll('button[aria-haspopup], [role="button"][aria-haspopup]')) : []),
-            ...(root.parentElement ? Array.from(root.parentElement.querySelectorAll('button[aria-haspopup], [role="button"][aria-haspopup]')) : [])
-          ];
-          const match = candidates.find(btn => ariaIds.includes((btn.getAttribute && btn.getAttribute('aria-controls')) || ''));
-          if (match) toggler = match;
-        } catch {}
-      }
-      if (!isExpanded()) {
-        if (wdSafe) {
-          try { toggler.click(); } catch {}
-        } else {
-          try { toggler.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); } catch {}
-          try { toggler.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); } catch {}
-          try { toggler.click(); } catch {}
-        }
-      }
-      try { el.focus(); } catch {}
-      if (!wdSafe) {
-        try { el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowDown' })); } catch {}
-      }
-    };
-    open();
-    const candidates = buildSelectCandidates(el, value);
-    // Try typing into the input to filter options if possible
-    try {
-      let inputEl = null;
-      if (el.tagName && el.tagName.toLowerCase() === 'input') {
-        inputEl = el;
-      } else {
-        inputEl = root.querySelector('input')
-               || (root.nextElementSibling && root.nextElementSibling.tagName === 'INPUT' ? root.nextElementSibling : null)
-               || (root.parentElement && root.parentElement.querySelector('input'))
-               || null;
-      }
-      if (inputEl) {
-        if (!wdSafe) {
-          const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
-          const q = (value != null ? String(value) : '');
-          try { inputEl.focus(); } catch {}
-          if (desc && desc.set) desc.set.call(inputEl, q); else inputEl.value = q;
-          inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-          // Nudge the menu to refresh filtering
-          try { inputEl.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowDown' })); } catch {}
-          try { inputEl.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'ArrowDown' })); } catch {}
-          try { inputEl.dispatchEvent(new Event('change', { bubbles: true })); } catch {}
-        } else {
-          // Workday-safe: avoid typing; just rely on open list + exact match search
-        }
-      }
-    } catch {}
-    // Find options with polling (to allow async filtering to render)
-    const ids = [el.getAttribute('aria-controls'), root.getAttribute && root.getAttribute('aria-controls')].filter(Boolean);
-    const findLists = () => {
-      const containers = [];
-      for (const id of ids) { const node = id && document.getElementById(id); if (node) containers.push(node); }
-      // For Workday, avoid global scans that may click unrelated listboxes and break the app
-      if (isWD) {
-        if (containers.length === 0) {
-          // Try local vicinity only
-          const near = root.closest('[data-automation-id]') || root.parentElement || root;
-          if (near) {
-            containers.push(...Array.from(near.querySelectorAll('[role="listbox"], [data-automation-id="selectMenu"]')));
-          }
-        }
-      } else {
-        // Non-Workday: allow a broader search as last resort
-        containers.push(...Array.from(document.querySelectorAll('[role="listbox"]')));
-        containers.push(...Array.from(document.querySelectorAll('[data-automation-id="selectMenu"], [data-automation-id*="selectMenu"], [data-automation-id="promptOption"]')));
-      }
-      return containers.filter(visibleOnPage).slice(-3);
-    };
-    const tryPick = () => {
-      const lists = findLists();
-      let item = null;
-      // Prefer the currently highlighted option if present via aria-activedescendant
-      try {
-        const combiInput = root.querySelector('input');
-        const activeId = (combiInput && (combiInput.getAttribute('aria-activedescendant') || '')) || '';
-        if (activeId) {
-          const activeEl = document.getElementById(activeId);
-          if (activeEl && visibleOnPage(activeEl)) {
-            item = activeEl.closest('[role="option"], li, div') || activeEl;
-          }
-        }
-      } catch {}
-      for (const list of lists.reverse()) {
-        const opts = Array.from(list.querySelectorAll('[data-automation-id="promptOption"], [role="option"]'))
-          .filter(visibleOnPage);
-        for (const cand of candidates) {
-          // Prioritize exact matches
-          item = opts.find(o => norm(o.getAttribute('data-value') || '') === cand
-                             || norm(o.getAttribute('aria-label') || '') === cand
-                             || norm(o.textContent || '') === cand);
-          if (!item) {
-            if (!wdSafe) {
-              // Then partial includes (non-Workday-safe)
-              item = opts.find(o => {
-                const t = norm(o.textContent || '');
-                const dv = norm(o.getAttribute('data-value') || '');
-                const al = norm(o.getAttribute('aria-label') || '');
-                return t.includes(cand) || dv.includes(cand) || al.includes(cand) || cand.includes(t);
-              });
-            } else {
-              // Workday-safe: allow partial only if it yields a unique option
-              const partials = opts.filter(o => {
-                const t = norm(o.textContent || '');
-                const dv = norm(o.getAttribute('data-value') || '');
-                const al = norm(o.getAttribute('aria-label') || '');
-                return t.includes(cand) || dv.includes(cand) || al.includes(cand) || cand.includes(t);
-              });
-              if (partials.length === 1) item = partials[0];
-            }
-          }
-          if (item) break;
-        }
-        if (item) break;
-      }
-      if (item) {
-        const optEl = (item.closest && item.closest('[data-automation-id="promptOption"], [role="option"]')) || (item.querySelector && item.querySelector('[data-automation-id="promptOption"], [role="option"]')) || item;
-        const clickTarget = optEl;
-        try { clickTarget.scrollIntoView({ block: 'nearest' }); } catch {}
-        // Use realistic click sequence for better framework compatibility
-        try { clickLikeUser(clickTarget); } catch {}
-        // Fire input/change on host input only in non-Workday-safe mode
-        if (!wdSafe) {
-          try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch {}
-          try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch {}
-        }
-        // Close the dropdown quickly after selection if still open
-        try {
-          const stillOpen = isExpanded() || findLists().some(l => visibleOnPage(l));
-          if (stillOpen) {
-            // Try Escape on the input/root, then blur, then toggler click
-            const inputEl = root.querySelector('input') || el;
-            try { inputEl.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Escape' })); } catch {}
-            try { inputEl.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Escape' })); } catch {}
-            try { inputEl.blur(); } catch {}
-            // As a fallback, try clicking the same toggler logic near the host
-            let closer =
-              root.querySelector('button[aria-haspopup], [role="button"][aria-haspopup]')
-              || (root.closest && root.closest('[data-automation-id]')?.querySelector('button[aria-haspopup], [role="button"][aria-haspopup]'))
-              || (root.parentElement && root.parentElement.querySelector('button[aria-haspopup], [role="button"][aria-haspopup]'))
-              || null;
-            try { if (closer && (isExpanded() || findLists().some(l => visibleOnPage(l)))) closer.click(); } catch {}
-            // Last resort: click outside to dismiss popover-style menus
-            try {
-              if (isExpanded() || findLists().some(l => visibleOnPage(l))) {
-                const pt = { clientX: 5, clientY: 5 };
-                document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, ...pt }));
-                document.body.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, ...pt }));
-                document.body.dispatchEvent(new MouseEvent('click', { bubbles: true, ...pt }));
-              }
-            } catch {}
-          }
-        } catch {}
-        finish();
-        return true;
-      }
-      return false;
-    };
-    if (tryPick()) return true;
-    // Poll a few times to wait for menu to update
-    let attempts = 0;
-    const maxAttempts = wdSafe ? 25 : 14;
-    const timer = () => {
-      if (tryPick()) return;
-      attempts++;
-      if (attempts >= maxAttempts) {
-        // Final fallback: only press Enter outside Workday to avoid accidental submits/navigations
-        if (!isWD) {
-          try {
-            const inputEl = root.querySelector('input') || el;
-            if (inputEl) {
-              inputEl.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter' }));
-              inputEl.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Enter' }));
-            }
-          } catch {}
-        }
-        finish();
-        return;
-      }
-      setTimeout(timer, 40);
-    };
-    setTimeout(timer, 40);
-    return true; // scheduled
-  }
-
-  // US state mapping for abbreviation/full-name cross-matching
-  const US_STATE_MAP = {
-    al: 'alabama', ak: 'alaska', az: 'arizona', ar: 'arkansas', ca: 'california', co: 'colorado', ct: 'connecticut',
-    de: 'delaware', fl: 'florida', ga: 'georgia', hi: 'hawaii', id: 'idaho', il: 'illinois', in: 'indiana', ia: 'iowa',
-    ks: 'kansas', ky: 'kentucky', la: 'louisiana', me: 'maine', md: 'maryland', ma: 'massachusetts', mi: 'michigan',
-    mn: 'minnesota', ms: 'mississippi', mo: 'missouri', mt: 'montana', ne: 'nebraska', nv: 'nevada', nh: 'new hampshire',
-    nj: 'new jersey', nm: 'new mexico', ny: 'new york', nc: 'north carolina', nd: 'north dakota', oh: 'ohio', ok: 'oklahoma',
-    or: 'oregon', pa: 'pennsylvania', ri: 'rhode island', sc: 'south carolina', sd: 'south dakota', tn: 'tennessee', tx: 'texas',
-    ut: 'utah', vt: 'vermont', va: 'virginia', wa: 'washington', wv: 'west virginia', wi: 'wisconsin', wy: 'wyoming', dc: 'district of columbia'
-  };
-  const US_STATE_NAME_TO_ABBR = Object.fromEntries(Object.entries(US_STATE_MAP).map(([abbr, name]) => [name, abbr]));
 
   function getLabelText(el) {
     let t = '';
@@ -586,16 +233,6 @@
     return rect.width > 0 && rect.height > 0;
   }
 
-  // Simulate a realistic user click sequence for better framework compatibility
-  function clickLikeUser(node) {
-    if (!node) return;
-    try { node.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); } catch {}
-    try { node.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); } catch {}
-    try { node.dispatchEvent(new PointerEvent('pointerup', { bubbles: true })); } catch {}
-    try { node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); } catch {}
-    try { node.click(); } catch {}
-  }
-
   function findAllInputs(root=document) {
     return Array.from(root.querySelectorAll('input, textarea')).filter(el => {
       const type = (el.type || '').toLowerCase();
@@ -606,138 +243,7 @@
     });
   }
 
-  // Try to set ARIA radio groups or button-based Yes/No controls
-  function attemptAriaRadioSelect(el, value) {
-    const nv = norm(value);
-    const yn = truthyFromString(nv);
-    const wantYes = yn === true || ['yes','y','true','1'].includes(nv);
-    const wantNo = yn === false || ['no','n','false','0'].includes(nv);
-    if (!wantYes && !wantNo) return false;
-    const group = el.closest('[role="radiogroup"]') || el;
-    let items = [];
-    try { items = Array.from(group.querySelectorAll('[role="radio"]')); } catch {}
-    if (!items.length) {
-      try { items = Array.from(group.querySelectorAll('input[type="radio"]')); } catch {}
-    }
-    // Also consider labels that control radios, useful when inputs are hidden
-    let labels = [];
-    try { labels = Array.from(group.querySelectorAll('label[for]')); } catch {}
-    // Fallback to buttons if radios are not present
-    if (!items.length) {
-      try { items = Array.from(group.querySelectorAll('button, [role="button"]')); } catch {}
-    }
-    if (!items.length && el.parentElement) {
-      try { items = Array.from(el.parentElement.querySelectorAll('[role="radio"], input[type="radio"], button, [role="button"]')); } catch {}
-    }
-    if (!items.length && !labels.length) return false;
-    const matchYN = (node) => {
-      const t = norm((node.getAttribute && (node.getAttribute('aria-label') || node.getAttribute('title'))) || node.textContent || '');
-      const v = norm((node.getAttribute && (node.getAttribute('value') || node.getAttribute('data-value'))) || '');
-      const all = new Set(`${t} ${v}`.split(/[^a-z0-9]+/).filter(Boolean));
-      const hasYes = all.has('yes') || all.has('y') || all.has('true') || all.has('1');
-      const hasNo = all.has('no') || all.has('n') || all.has('false') || all.has('0');
-      if (wantYes) return hasYes && !hasNo;
-      if (wantNo) return hasNo && !hasYes;
-      return false;
-    };
-    let pick = items.find(matchYN) || null;
-    // Try labels if no direct item matched
-    if (!pick && labels.length) {
-      const labPick = labels.find(l => matchYN(l));
-      if (labPick) pick = labPick;
-    }
-    if (!pick && items.length >= 2) {
-      const tokensOf = (node) => {
-        const t = norm(((node.getAttribute && (node.getAttribute('aria-label') || node.getAttribute('title'))) || node.textContent || ''));
-        return new Set(t.split(/[^a-z0-9]+/).filter(Boolean));
-      };
-      const y = items.find(n => {
-        const all = tokensOf(n);
-        return all.has('yes') || all.has('y') || all.has('true') || all.has('1');
-      });
-      const n = items.find(n => {
-        const all = tokensOf(n);
-        return all.has('no') || all.has('n') || all.has('false') || all.has('0');
-      });
-      pick = wantYes ? (y || items[0]) : (n || items[1] || items[0]);
-    }
-    if (!pick) return false;
-    try { pick.scrollIntoView({ block: 'nearest' }); } catch {}
-    if (pick.tagName && pick.tagName.toLowerCase() === 'label') {
-      try { clickLikeUser(pick); } catch {}
-      // Ensure its target input is checked
-      try {
-        const fid = pick.getAttribute('for');
-        if (fid) {
-          const inp = document.getElementById(fid);
-          if (inp && inp.type && inp.type.toLowerCase() === 'radio') {
-            const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'checked');
-            if (desc && desc.set) desc.set.call(inp, true); else inp.checked = true;
-            try { inp.setAttribute('aria-checked', 'true'); } catch {}
-            inp.dispatchEvent(new Event('input', { bubbles: true }));
-            inp.dispatchEvent(new Event('change', { bubbles: true }));
-          }
-        }
-      } catch {}
-    } else if (pick.tagName && pick.tagName.toLowerCase() === 'input' && (pick.type||'').toLowerCase() === 'radio') {
-      // Try user-like click on label or radio
-      try {
-        const pid = pick.getAttribute('id');
-        const lab = pid ? document.querySelector(`label[for="${CSS.escape(pid)}"]`) : null;
-        if (lab && visible(lab)) { clickLikeUser(lab); } else { clickLikeUser(pick); }
-      } catch {}
-      // Fallback to property set + events
-      const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'checked');
-      if (desc && desc.set) desc.set.call(pick, true); else pick.checked = true;
-      try { pick.setAttribute('aria-checked', 'true'); } catch {}
-      pick.dispatchEvent(new Event('input', { bubbles: true }));
-      pick.dispatchEvent(new Event('change', { bubbles: true }));
-    } else {
-      try { clickLikeUser(pick); } catch {}
-    }
-    return true;
-  }
-
-  // Collect ARIA combobox candidates for sequential processing
-  function collectComboboxCandidates(profile, root=document) {
-    const tasks = [];
-    const seenHosts = new Set();
-    const inputs = findAllInputs(root);
-    for (const el of inputs) {
-      const tag = (el.tagName || '').toLowerCase();
-      const role = (el.getAttribute('role') || '').toLowerCase();
-      const hasListbox = (el.getAttribute('aria-haspopup') || '').toLowerCase().includes('listbox') || !!el.getAttribute('aria-controls');
-      const hostNonInput = (role === 'combobox' || hasListbox) && tag !== 'input' && tag !== 'select' && tag !== 'textarea';
-      const k = keyForElement(el);
-      const hintCombo = role === 'combobox' || !!el.closest('[role="combobox"]') || (el.getAttribute('aria-haspopup')||'').includes('listbox') || !!el.getAttribute('aria-controls');
-      const shouldCombo = hostNonInput || (tag === 'input' && (hintCombo || ['country','state','hearAboutUs','phoneDeviceType','phoneCountryCode'].includes(k || '')));
-      if (!shouldCombo) continue;
-      const v = profile[k]; if (!v) continue;
-      const host = el.closest('[role="combobox"], [aria-haspopup*="listbox"], [data-automation-id*="select"], [data-automation-id*="ComboBox"], [data-automation-id*="prompt"]') || el;
-      if (seenHosts.has(host)) continue;
-      seenHosts.add(host);
-      tasks.push({ el, value: v });
-    }
-    return tasks;
-  }
-
-  async function processComboboxQueue(queue) {
-    let done = 0;
-    for (const { el, value } of queue) {
-      await waitUntil(() => !COMBO_BUSY, 3500, 40);
-      // small pause to let reactive UIs settle
-      await new Promise(r => setTimeout(r, 25));
-      let started = false;
-      try { started = attemptComboboxSelect(el, value); } catch {}
-      if (started) {
-        await waitUntil(() => !COMBO_BUSY, 4000, 40);
-        await new Promise(r => setTimeout(r, 30));
-        done++;
-      }
-    }
-    return done;
-  }
-
+  
   function fillInFrames(profile) {
     let total = 0;
     const iframes = Array.from(document.querySelectorAll('iframe'));
@@ -793,8 +299,8 @@
       for (const id of ids) {
         const host = document.querySelector(`[data-automation-id="${id}"]`);
         if (host) {
-          const input = host.querySelector('input, textarea, select')
-                       || host.closest('[data-automation-id]')?.querySelector('input, textarea, select');
+          const input = host.querySelector('input, textarea')
+                       || host.closest('[data-automation-id]')?.querySelector('input, textarea');
           if (input && setInputValue(input, val)) { count++; break; }
         }
       }
@@ -815,11 +321,11 @@
       const hostIds = ['countryPhoneCode','phoneCountryCode','phoneCountry','countryDialCode','dialCode'];
       for (const id of hostIds) {
         const host = document.querySelector(`[data-automation-id="${id}"]`);
-        if (host) { codeEl = host.querySelector('select, input'); if (codeEl) break; }
+        if (host) { codeEl = host.querySelector('input, textarea'); if (codeEl) break; }
       }
       if (!codeEl) {
-        // Fallback: find a select/input whose label/attrs suggest phone code
-        const cands = Array.from(document.querySelectorAll('select, input'));
+        // Fallback: find an input whose label/attrs suggest phone code
+        const cands = Array.from(document.querySelectorAll('input, textarea'));
         codeEl = cands.find(e => {
           const bag = [];
           for (const a of ATTRS) { const v = e.getAttribute(a); if (v) bag.push(v); }
@@ -829,19 +335,7 @@
         }) || null;
       }
       if (codeEl) {
-        const nv = norm(phoneCode);
-        const digits = nv.replace(/[^0-9]/g, '');
-        const candidates = Array.from(new Set([
-          nv,
-          digits ? ('+'+digits) : null,
-          digits || null
-        ].filter(Boolean)));
-        let ok = false;
-        if (codeEl.tagName.toLowerCase() === 'select') {
-          for (const cand of candidates) { if (setInputValue(codeEl, cand)) { ok = true; break; } }
-        }
-        if (!ok) setInputValue(codeEl, phoneCode);
-        if (ok) count++;
+        if (setInputValue(codeEl, phoneCode)) count++;
       }
     }
     // Workday tweak: avoid generic fallback to reduce unintended fills
@@ -857,8 +351,8 @@
     const phoneCode = profile.phoneCountryCode || '';
     if (phoneCode) {
       let codeEl = null;
-      // Look for selects/inputs whose label or attributes imply country/phone code
-      const cands = Array.from(document.querySelectorAll('select, input'));
+      // Look for inputs whose label or attributes imply country/phone code
+      const cands = Array.from(document.querySelectorAll('input, textarea'));
       codeEl = cands.find(e => {
         const bag = [];
         for (const a of ATTRS) { const v = e.getAttribute(a); if (v) bag.push(v); }
@@ -867,18 +361,7 @@
         return t.includes('phone code') || t.includes('country code') || t.includes('dial code') || t.includes('country phone code');
       }) || null;
       if (codeEl) {
-        const digits = (phoneCode+'').replace(/[^0-9]/g, '');
-        const candidates = Array.from(new Set([
-          phoneCode,
-          digits ? ('+'+digits) : null,
-          digits || null
-        ].filter(Boolean)));
-        let ok = false;
-        if (codeEl.tagName.toLowerCase() === 'select') {
-          for (const cand of candidates) { if (setInputValue(codeEl, cand)) { ok = true; break; } }
-        }
-        if (!ok) { ok = setInputValue(codeEl, phoneCode); }
-        if (ok) count++;
+        if (setInputValue(codeEl, phoneCode)) count++;
       }
     }
     // Use generic engine for the rest (Oracle inputs have usable labels/attrs)
