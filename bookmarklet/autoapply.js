@@ -11,6 +11,7 @@
   const NS = '__AUTOAPPLY__';
   const log = (...a) => console.debug('[AutoApply]', ...a);
   let COMBO_BUSY = false; // prevent concurrent combobox operations that can confuse frameworks like Workday
+  let FILL_PHASE = 'all'; // 'textual' | 'select' | 'combobox' | 'all'
 
   // --- Storage (localStorage) ---
   const LS_KEYS = { profile: 'aa_profile_v1', settings: 'aa_settings_v1' };
@@ -251,6 +252,19 @@
     if (s.visibility === 'hidden' || s.display === 'none') return false;
     const r = node.getBoundingClientRect();
     return r.width > 0 && r.height > 0;
+  }
+
+  // Wait until a condition is true or until timeout
+  function waitUntil(checkFn, timeoutMs = 3000, intervalMs = 60) {
+    return new Promise(resolve => {
+      const start = Date.now();
+      const tick = () => {
+        try { if (checkFn()) return resolve(true); } catch {}
+        if (Date.now() - start >= timeoutMs) return resolve(false);
+        setTimeout(tick, intervalMs);
+      };
+      tick();
+    });
   }
 
   // Try to interact with ARIA combobox/popover style dropdowns (e.g., Workday)
@@ -498,15 +512,29 @@
   function setInputValue(el, value) {
     if (value == null) return false;
     const tag = el.tagName.toLowerCase();
-    // If this is a combobox/listbox host (non-input), try ARIA combobox selection
     const role = (el.getAttribute('role') || '').toLowerCase();
     const hasListbox = (el.getAttribute('aria-haspopup') || '').toLowerCase().includes('listbox') || !!el.getAttribute('aria-controls');
+    const k = keyForElement(el);
+    const isComboHostNonInput = (role === 'combobox' || hasListbox) && tag !== 'input' && tag !== 'select' && tag !== 'textarea';
+    const hintCombo = role === 'combobox' || !!el.closest('[role="combobox"]') || (el.getAttribute('aria-haspopup')||'').includes('listbox') || !!el.getAttribute('aria-controls');
+    const shouldCombo = hintCombo || ['country','state','hearAboutUs','phoneDeviceType','phoneCountryCode'].includes(k || '');
+
+    // Phase gating: fill textual first, then native selects, then ARIA comboboxes
+    if (FILL_PHASE === 'textual') {
+      if (tag === 'select' || isComboHostNonInput || (tag === 'input' && shouldCombo)) return false;
+    }
+    if (FILL_PHASE === 'select') {
+      if (tag !== 'select') return false;
+    }
+    if (FILL_PHASE === 'combobox') {
+      if (!(isComboHostNonInput || (tag === 'input' && shouldCombo))) return false;
+    }
+    // If this is a combobox/listbox host (non-input), try ARIA combobox selection
     if ((role === 'combobox' || hasListbox) && tag !== 'input' && tag !== 'select' && tag !== 'textarea') {
       return attemptComboboxSelect(el, value);
     }
     if (tag === 'input' || tag === 'textarea') {
       const type = (el.type || 'text').toLowerCase();
-      const k = keyForElement(el);
       // Radios
       if (type === 'radio') {
         const nv = norm(value);
@@ -583,9 +611,9 @@
       }
       // Try ARIA combobox-style dropdowns before plain text set
       try {
-        const hintCombo = el.getAttribute('role') === 'combobox' || !!el.closest('[role="combobox"]') || (el.getAttribute('aria-haspopup')||'').includes('listbox') || !!el.getAttribute('aria-controls');
-        const shouldCombo = hintCombo || ['country','state','hearAboutUs','phoneDeviceType','phoneCountryCode'].includes(k || '');
-        if (shouldCombo) {
+        const hintCombo2 = el.getAttribute('role') === 'combobox' || !!el.closest('[role="combobox"]') || (el.getAttribute('aria-haspopup')||'').includes('listbox') || !!el.getAttribute('aria-controls');
+        const shouldCombo2 = hintCombo2 || ['country','state','hearAboutUs','phoneDeviceType','phoneCountryCode'].includes(k || '');
+        if (shouldCombo2) {
           if (attemptComboboxSelect(el, value)) return true;
         }
       } catch {}
@@ -655,6 +683,46 @@
       if (el.getAttribute && (el.getAttribute('aria-disabled') === 'true' || el.getAttribute('aria-readonly') === 'true')) return false;
       return visible(el);
     });
+  }
+
+  // Collect ARIA combobox candidates for sequential processing
+  function collectComboboxCandidates(profile, root=document) {
+    const tasks = [];
+    const seenHosts = new Set();
+    const inputs = findAllInputs(root);
+    for (const el of inputs) {
+      const tag = (el.tagName || '').toLowerCase();
+      const role = (el.getAttribute('role') || '').toLowerCase();
+      const hasListbox = (el.getAttribute('aria-haspopup') || '').toLowerCase().includes('listbox') || !!el.getAttribute('aria-controls');
+      const hostNonInput = (role === 'combobox' || hasListbox) && tag !== 'input' && tag !== 'select' && tag !== 'textarea';
+      const k = keyForElement(el);
+      const hintCombo = role === 'combobox' || !!el.closest('[role="combobox"]') || (el.getAttribute('aria-haspopup')||'').includes('listbox') || !!el.getAttribute('aria-controls');
+      const shouldCombo = hostNonInput || (tag === 'input' && (hintCombo || ['country','state','hearAboutUs','phoneDeviceType','phoneCountryCode'].includes(k || '')));
+      if (!shouldCombo) continue;
+      const v = profile[k]; if (!v) continue;
+      const host = el.closest('[role="combobox"], [aria-haspopup*="listbox"], [data-automation-id*="select"], [data-automation-id*="ComboBox"], [data-automation-id*="prompt"]') || el;
+      if (seenHosts.has(host)) continue;
+      seenHosts.add(host);
+      tasks.push({ el, value: v });
+    }
+    return tasks;
+  }
+
+  async function processComboboxQueue(queue) {
+    let done = 0;
+    for (const { el, value } of queue) {
+      await waitUntil(() => !COMBO_BUSY, 5000, 80);
+      // small pause to let reactive UIs settle
+      await new Promise(r => setTimeout(r, 50));
+      let started = false;
+      try { started = attemptComboboxSelect(el, value); } catch {}
+      if (started) {
+        await waitUntil(() => !COMBO_BUSY, 6000, 80);
+        await new Promise(r => setTimeout(r, 60));
+        done++;
+      }
+    }
+    return done;
   }
 
   function fillInFrames(profile) {
@@ -858,19 +926,54 @@
         profile = { ...profile, ...uiProfile };
       }
     } catch {}
+
     const vendor = getVendor();
-    let count = vendor.fill(profile);
-    let label = vendor.id;
-    if (count === 0 && vendor.id !== 'generic') {
-      const gc = fillGeneric(profile);
-      if (gc > 0) { count = gc; label = `${vendor.id}→generic`; }
+    let label = vendor.id + ' phased';
+    let total = 0;
+
+    // Phase 1: non-dropdown textual fields
+    FILL_PHASE = 'textual';
+    let c1 = 0;
+    try { c1 = vendor.fill(profile); } catch {}
+    if (c1 === 0 && vendor.id !== 'generic') {
+      try { const gc = fillGeneric(profile); if (gc > 0) c1 = gc; } catch {}
     }
-    // Try to also fill any same-origin iframes generically
-    const fc = fillInFrames(profile);
-    if (fc > 0) { count += fc; label += `+frames`; }
-    log(`Filled ${count} fields via ${label} (${trigger})`);
-    ui?.flash(`Filled ${count} fields (${label})`);
-    return count;
+    try { const fc1 = fillInFrames(profile); if (fc1 > 0) c1 += fc1; } catch {}
+    total += c1;
+
+    // Phase 2: native <select> elements
+    FILL_PHASE = 'select';
+    let c2 = 0;
+    try { c2 = vendor.fill(profile); } catch {}
+    if (c2 === 0 && vendor.id !== 'generic') {
+      try { const gc2 = fillGeneric(profile); if (gc2 > 0) c2 = gc2; } catch {}
+    }
+    try { const fc2 = fillInFrames(profile); if (fc2 > 0) c2 += fc2; } catch {}
+    total += c2;
+
+    // Phase 3: ARIA comboboxes (sequential)
+    FILL_PHASE = 'combobox';
+    const docs = [document];
+    try {
+      for (const fr of Array.from(document.querySelectorAll('iframe'))) {
+        try {
+          const doc = fr.contentDocument || (fr.contentWindow && fr.contentWindow.document);
+          if (doc) docs.push(doc);
+        } catch {}
+      }
+    } catch {}
+    let queue = [];
+    try { for (const d of docs) queue = queue.concat(collectComboboxCandidates(profile, d)); } catch {}
+    let c3 = 0;
+    try { c3 = await processComboboxQueue(queue); } catch {}
+    total += c3;
+
+    // Reset phase
+    FILL_PHASE = 'all';
+
+    log(`Filled ${total} fields via ${label} (${trigger})`);
+    ui?.flash(`Filled ${total} fields (${label})`);
+    return total;
   }
 
   // --- UI Overlay (Shadow DOM) ---
