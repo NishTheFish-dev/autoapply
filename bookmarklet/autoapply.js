@@ -548,187 +548,35 @@
   function setInputValue(el, value) {
     if (value == null) return false;
     const tag = el.tagName.toLowerCase();
-    const role = (el.getAttribute('role') || '').toLowerCase();
-    const hasListbox = (el.getAttribute('aria-haspopup') || '').toLowerCase().includes('listbox') || !!el.getAttribute('aria-controls');
     const k = keyForElement(el);
-    const isComboHostNonInput = (role === 'combobox' || hasListbox) && tag !== 'input' && tag !== 'select' && tag !== 'textarea';
-    const hintCombo = role === 'combobox' || !!el.closest('[role="combobox"]') || (el.getAttribute('aria-haspopup')||'').includes('listbox') || !!el.getAttribute('aria-controls');
-    const shouldCombo = hintCombo || ['country','state','hearAboutUs','phoneDeviceType','phoneCountryCode'].includes(k || '');
 
-    // Phase gating: fill textual first, then native selects, then ARIA comboboxes
-    if (FILL_PHASE === 'textual') {
-      if (tag === 'select' || isComboHostNonInput || (tag === 'input' && shouldCombo)) return false;
-    }
-    if (FILL_PHASE === 'select') {
-      if (tag !== 'select') return false;
-    }
-    if (FILL_PHASE === 'combobox') {
-      if (!(isComboHostNonInput || (tag === 'input' && shouldCombo))) return false;
-    }
-    // Handle ARIA radio groups and button-based Yes/No on container elements
-    if (!['input','select','textarea'].includes(tag)) {
-      if (role === 'radiogroup' || role === 'radio' || el.closest('[role="radiogroup"]') || (el.querySelector && el.querySelector('input[type="radio"], [role="radio"]'))) {
-        const ok = attemptAriaRadioSelect(el, value);
-        if (ok) return true;
-      }
-    }
+    // Only fill text-like inputs and textareas. Skip selects, radios, and checkboxes.
+    if (!(tag === 'input' || tag === 'textarea')) return false;
+    const type = (el.type || 'text').toLowerCase();
+    if (['radio','checkbox','file','submit','reset','button','image','hidden'].includes(type)) return false;
 
-    // Inputs and textareas
-    if (tag === 'input' || tag === 'textarea') {
-      const type = (el.type || 'text').toLowerCase();
-      // Radios
-      if (type === 'radio') {
-        const nv = norm(value);
-        if (!nv) return false;
-        const yn = truthyFromString(nv);
-        const cands = new Set([nv]);
-        try {
-          const kk = keyForElement(el);
-          if (kk && DEMO_KEYS.has(kk) && isNA(value)) {
-            for (const c of preferNotCandidates()) { cands.add(c); cands.add(strip(c)); }
-          }
-        } catch {}
-        if (yn === true) { cands.add('yes'); cands.add('y'); cands.add('true'); cands.add('1'); }
-        if (yn === false) { cands.add('no'); cands.add('n'); cands.add('false'); cands.add('0'); }
-        const name = el.getAttribute('name');
-        const group = name ? Array.from(document.querySelectorAll(`input[type="radio"][name="${CSS.escape(name)}"]`)) : [el];
-        let picked = null;
-        for (const r of group) {
-          const bag = [];
-          for (const a of ATTRS) { const v = r.getAttribute(a); if (v) bag.push(v); }
-          bag.push(getLabelText(r));
-          const tNorm = norm(bag.filter(Boolean).join(' | '));
-          const tokens = tNorm.split(/[^a-z0-9]+/).filter(Boolean);
-          const valTok = norm(`${r.value || ''} ${(r.getAttribute('data-value') || '')} ${(r.getAttribute('aria-label') || '')} ${(r.getAttribute('title') || '')}`).split(/[^a-z0-9]+/).filter(Boolean);
-          const all = new Set([...tokens, ...valTok]);
-          const hasYes = all.has('yes') || all.has('y') || all.has('true') || all.has('1');
-          const hasNo = all.has('no') || all.has('n') || all.has('false') || all.has('0');
-          const direct = Array.from(cands).some(c => all.has(c));
-          const wanted = (yn === true) ? (hasYes && !hasNo) : (yn === false) ? (hasNo && !hasYes) : false;
-          if (direct || wanted) { picked = r; break; }
-        }
-        if (picked) {
-          try {
-            const pid = picked.getAttribute('id');
-            const lab = pid ? document.querySelector(`label[for="${CSS.escape(pid)}"]`) : null;
-            if (lab && visible(lab)) { clickLikeUser(lab); } else { clickLikeUser(picked); }
-            // Fallback: click common wrappers/buttons if present
-            if (!picked.checked) {
-              const wrappers = [];
-              try { if (picked.parentElement) wrappers.push(picked.parentElement); } catch {}
-              try { const lab2 = picked.getAttribute('id') ? document.querySelector(`label[for="${CSS.escape(picked.getAttribute('id'))}"]`) : null; if (lab2) wrappers.push(lab2); } catch {}
-              try { const btn = picked.closest('button, [role="button"]'); if (btn) wrappers.push(btn); } catch {}
-              for (const w of wrappers) { if (w && visible(w)) { clickLikeUser(w); if (picked.checked) break; } }
-            }
-          } catch {}
-          // Ensure state is set and events fire even if clicks were ignored
-          try {
-            const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'checked');
-            if (desc && desc.set) desc.set.call(picked, true); else picked.checked = true;
-            try { picked.setAttribute('aria-checked', 'true'); } catch {}
-          } catch {}
-          try { picked.dispatchEvent(new Event('input', { bubbles: true })); } catch {}
-          try { picked.dispatchEvent(new Event('change', { bubbles: true })); } catch {}
-          return true;
-        }
-        return false;
-      }
-
-      // Checkboxes
-      if (type === 'checkbox') {
-        const nv = norm(value);
-        const yn = truthyFromString(nv);
-        const bag = [];
-        for (const a of ATTRS) { const v = el.getAttribute(a); if (v) bag.push(v); }
-        bag.push(getLabelText(el));
-        const text = strip(bag.filter(Boolean).join(' | '));
-        let shouldCheck = yn === true;
-        if (yn === null && nv) {
-          const tokens = nv.split(/[,;|]/).map(t => strip(t)).filter(Boolean);
-          if (tokens.length) {
-            const valueText = strip(el.value || '');
-            shouldCheck = tokens.some(t => text.includes(t) || valueText.includes(t));
-          }
-        }
-        const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'checked');
-        const newVal = !!shouldCheck;
-        if (el.checked === newVal) return false;
-        if (desc && desc.set) desc.set.call(el, newVal); else el.checked = newVal;
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-        return true;
-      }
-
-      if (type === 'file') return false;
-
-      // Graduation date special handling
-      if (k === 'graduationDate') {
-        const parts = parseDateParts(value);
-        const v = parts ? formatGradForInput(el, parts) : value;
-        const proto = tag === 'input' ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
-        const desc = Object.getOwnPropertyDescriptor(proto, 'value');
-        const newVal = v;
-        if (norm(el.value || '') === norm(newVal || '')) return false;
-        if (desc && desc.set) desc.set.call(el, newVal); else el.value = newVal;
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-        return true;
-      }
-
-      // Try ARIA combobox-style dropdowns before plain text set
-      try {
-        const hintCombo2 = el.getAttribute('role') === 'combobox' || !!el.closest('[role="combobox"]') || (el.getAttribute('aria-haspopup')||'').includes('listbox') || !!el.getAttribute('aria-controls');
-        const shouldCombo2 = hintCombo2 || ['country','state','hearAboutUs','phoneDeviceType','phoneCountryCode'].includes(k || '');
-        if (shouldCombo2) {
-          if (attemptComboboxSelect(el, value)) return true;
-        }
-      } catch {}
-
-      // Plain text/textarea
+    // Graduation date special handling
+    if (k === 'graduationDate') {
+      const parts = parseDateParts(value);
+      const v = parts ? formatGradForInput(el, parts) : value;
       const proto = tag === 'input' ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
       const desc = Object.getOwnPropertyDescriptor(proto, 'value');
-      if (norm(el.value || '') === norm((value || '').toString())) return false;
-      if (desc && desc.set) desc.set.call(el, value); else el.value = value;
+      const newVal = v;
+      if (norm(el.value || '') === norm(newVal || '')) return false;
+      if (desc && desc.set) desc.set.call(el, newVal); else el.value = newVal;
       el.dispatchEvent(new Event('input', { bubbles: true }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
       return true;
     }
-    if (tag === 'select') {
-      const options = Array.from(el.options || []);
-      const candidates = buildSelectCandidates(el, value);
-      if (el.multiple) {
-        const tokens = (''+value).split(/[,;|]/).map(t => norm(t)).filter(Boolean);
-        const want = new Set(tokens.length ? tokens : candidates);
-        let selected = 0;
-        for (const o of options) {
-          const t = norm(o.textContent || '');
-          const v = norm(o.value || '');
-          const match = Array.from(want).some(c => c === v || c === t || t.includes(c) || v.includes(c) || c.includes(t));
-          if (match) { o.selected = true; selected++; }
-        }
-        if (selected > 0) {
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-          el.dispatchEvent(new Event('change', { bubbles: true }));
-          return true;
-        }
-        return false;
-      } else {
-        let m = null;
-        for (const cand of candidates) {
-          m = options.find(o => norm(o.value) === cand) || options.find(o => norm(o.textContent) === cand);
-          if (!m) m = options.find(o => norm(o.textContent).includes(cand)) || options.find(o => cand.includes(norm(o.textContent)));
-          if (m) break;
-        }
-        if (m) {
-          el.value = m.value;
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-          el.dispatchEvent(new Event('change', { bubbles: true }));
-          return true;
-        }
-        return false;
-      }
-    }
-    return false;
+
+    // Plain text/textarea
+    const proto = tag === 'input' ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
+    const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+    if (norm(el.value || '') === norm((value || '').toString())) return false;
+    if (desc && desc.set) desc.set.call(el, value); else el.value = value;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
   }
 
   function visible(el) {
@@ -749,33 +597,12 @@
   }
 
   function findAllInputs(root=document) {
-    return Array.from(root.querySelectorAll('input, textarea, select, [role="combobox"], [aria-haspopup*="listbox"], [role="radiogroup"], [role="radio"]')).filter(el => {
+    return Array.from(root.querySelectorAll('input, textarea')).filter(el => {
       const type = (el.type || '').toLowerCase();
-      const isComboHost = (
-        (el.getAttribute && (el.getAttribute('role') || '').toLowerCase() === 'combobox') ||
-        ((el.getAttribute && (el.getAttribute('aria-haspopup') || '').toLowerCase().includes('listbox')) || !!(el.getAttribute && el.getAttribute('aria-controls')))
-      );
-      const isRadio = type === 'radio';
-      if (['hidden','submit','image','reset','file'].includes(type)) return false;
-      if (type === 'button' && !isComboHost) return false; // allow button if it hosts a listbox/combobox
+      if (['hidden','submit','image','reset','file','radio','checkbox','button'].includes(type)) return false;
       if (el.disabled || el.readOnly) return false;
       if (el.getAttribute && (el.getAttribute('aria-disabled') === 'true' || el.getAttribute('aria-readonly') === 'true')) return false;
-      if (visible(el)) return true;
-      // Many frameworks visually hide native radios; include them if their label or wrapper is visible
-      if (isRadio) {
-        try {
-          const id = el.getAttribute('id');
-          if (id) {
-            const lab = document.querySelector(`label[for="${CSS.escape(id)}"]`);
-            if (lab && visible(lab)) return true;
-          }
-        } catch {}
-        try {
-          const wrap = el.closest && el.closest('[role="radiogroup"], label, span, div');
-          if (wrap && visible(wrap)) return true;
-        } catch {}
-      }
-      return false;
+      return visible(el);
     });
   }
 
@@ -1114,49 +941,15 @@
     } catch {}
 
     const vendor = getVendor();
-    let label = vendor.id + ' phased';
     let total = 0;
 
-    // Phase 1: non-dropdown textual fields
-    FILL_PHASE = 'textual';
-    let c1 = 0;
-    try { c1 += (+vendor.fill(profile) || 0); } catch {}
-    // Also run generic textual fill to cover fields not mapped by vendor
-    try { if (vendor.id !== 'generic') c1 += (+fillGeneric(profile) || 0); } catch {}
-    try { const fc1 = fillInFrames(profile); if (fc1 > 0) c1 += fc1; } catch {}
-    total += c1;
+    // Single pass: text inputs and textareas only
+    try { total += (+vendor.fill(profile) || 0); } catch {}
+    try { if (vendor.id !== 'generic') total += (+fillGeneric(profile) || 0); } catch {}
+    try { const fc = fillInFrames(profile); if (fc > 0) total += fc; } catch {}
 
-    // Phase 2: native <select> elements
-    FILL_PHASE = 'select';
-    let c2 = 0;
-    try { c2 += (+vendor.fill(profile) || 0); } catch {}
-    // Also run generic select fill to cover fields not mapped by vendor
-    try { if (vendor.id !== 'generic') c2 += (+fillGeneric(profile) || 0); } catch {}
-    try { const fc2 = fillInFrames(profile); if (fc2 > 0) c2 += fc2; } catch {}
-    total += c2;
-
-    // Phase 3: ARIA comboboxes (sequential)
-    FILL_PHASE = 'combobox';
-    const docs = [document];
-    try {
-      for (const fr of Array.from(document.querySelectorAll('iframe'))) {
-        try {
-          const doc = fr.contentDocument || (fr.contentWindow && fr.contentWindow.document);
-          if (doc) docs.push(doc);
-        } catch {}
-      }
-    } catch {}
-    let queue = [];
-    try { for (const d of docs) queue = queue.concat(collectComboboxCandidates(profile, d)); } catch {}
-    let c3 = 0;
-    try { c3 = await processComboboxQueue(queue); } catch {}
-    total += c3;
-
-    // Reset phase
-    FILL_PHASE = 'all';
-
-    log(`Filled ${total} fields via ${label} (${trigger})`);
-    ui?.flash(`Filled ${total} fields (${label})`);
+    log(`Filled ${total} fields via ${vendor.id} (text-only) (${trigger})`);
+    ui?.flash(`Filled ${total} fields (text-only)`);
     return total;
   }
 
@@ -1217,14 +1010,7 @@
           <div class="row"><label>Last</label><input id="aa_lastName" type="text" /></div>
           <div class="row"><label>Email</label><input id="aa_email" type="email" /></div>
           <div class="row"><label>Phone</label><input id="aa_phone" type="tel" /></div>
-          <div class="row"><label>Device Type</label>
-            <select id="aa_phoneDeviceType">
-              <option value="mobile">Mobile</option>
-              <option value="home">Home</option>
-              <option value="work">Work</option>
-              <option value="other">Other</option>
-            </select>
-          </div>
+          <div class="row"><label>Device Type</label><input id="aa_phoneDeviceType" type="text" placeholder="mobile/home/work/other" /></div>
           <div class="row"><label>Phone Code</label><input id="aa_phoneCountryCode" type="text" /></div>
           <div class="row"><label>Address1</label><input id="aa_address1" type="text" /></div>
           <div class="row"><label>Address2</label><input id="aa_address2" type="text" /></div>
@@ -1254,13 +1040,7 @@
           <div class="row"><label>Desired Locations</label><input id="aa_desiredLocations" type="text" /></div>
           <div class="row"><label>Security Clearance</label><input id="aa_securityClearance" type="text" /></div>
           <div class="row"><label>Heard About Us</label><input id="aa_hearAboutUs" type="text" placeholder="e.g., Referral, LinkedIn, Indeed" /></div>
-          <div class="row"><label>Worked Here Before</label>
-            <select id="aa_previouslyWorkedHere">
-              <option value="">-</option>
-              <option value="yes">Yes</option>
-              <option value="no">No</option>
-            </select>
-          </div>
+          <div class="row"><label>Worked Here Before</label><input id="aa_previouslyWorkedHere" type="text" placeholder="yes/no" /></div>
         </div>
 
         <div class="screen screen-demo">
