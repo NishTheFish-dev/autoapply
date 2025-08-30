@@ -556,61 +556,58 @@
     if (FILL_PHASE === 'combobox') {
       if (!(isComboHostNonInput || (tag === 'input' && shouldCombo))) return false;
     }
-    // Handle ARIA radio groups and button-based Yes/No
+    // Handle ARIA radio groups and button-based Yes/No on container elements
     if (!['input','select','textarea'].includes(tag)) {
       if (role === 'radiogroup' || role === 'radio' || el.closest('[role="radiogroup"]') || (el.querySelector && el.querySelector('input[type="radio"], [role="radio"]'))) {
         const ok = attemptAriaRadioSelect(el, value);
         if (ok) return true;
       }
     }
-    // If this is a combobox/listbox host (non-input), try ARIA combobox selection
-    if ((role === 'combobox' || hasListbox) && tag !== 'input' && tag !== 'select' && tag !== 'textarea') {
-      return attemptComboboxSelect(el, value);
-    }
+
+    // Inputs and textareas
     if (tag === 'input' || tag === 'textarea') {
       const type = (el.type || 'text').toLowerCase();
       // Radios
       if (type === 'radio') {
         const nv = norm(value);
         if (!nv) return false;
-        const name = el.getAttribute('name');
-        const group = name ? Array.from(document.querySelectorAll(`input[type="radio"][name="${CSS.escape(name)}"]`)) : [el];
-        // candidates: exact value or label match; also yes/no normalization
         const yn = truthyFromString(nv);
         const cands = new Set([nv]);
         try {
-          const k = keyForElement(el);
-          if (k && DEMO_KEYS.has(k) && isNA(value)) {
+          const kk = keyForElement(el);
+          if (kk && DEMO_KEYS.has(kk) && isNA(value)) {
             for (const c of preferNotCandidates()) { cands.add(c); cands.add(strip(c)); }
           }
         } catch {}
         if (yn === true) { cands.add('yes'); cands.add('y'); cands.add('true'); cands.add('1'); }
         if (yn === false) { cands.add('no'); cands.add('n'); cands.add('false'); cands.add('0'); }
+        const name = el.getAttribute('name');
+        const group = name ? Array.from(document.querySelectorAll(`input[type="radio"][name="${CSS.escape(name)}"]`)) : [el];
         let picked = null;
         for (const r of group) {
           const bag = [];
           for (const a of ATTRS) { const v = r.getAttribute(a); if (v) bag.push(v); }
           bag.push(getLabelText(r));
-          const text = strip(bag.filter(Boolean).join(' | '));
-          if (cands.has(text) || cands.has(strip(r.value || ''))) { picked = r; break; }
-          // partial includes if obvious
-          for (const c of cands) { if (!picked && (text.includes(c) || strip(r.value||'').includes(c))) { picked = r; break; } }
-          if (picked) break;
+          const tNorm = norm(bag.filter(Boolean).join(' | '));
+          const tokens = tNorm.split(/[^a-z0-9]+/).filter(Boolean);
+          const valTok = norm(`${r.value || ''} ${(r.getAttribute('data-value') || '')} ${(r.getAttribute('aria-label') || '')} ${(r.getAttribute('title') || '')}`).split(/[^a-z0-9]+/).filter(Boolean);
+          const all = new Set([...tokens, ...valTok]);
+          const hasYes = all.has('yes') || all.has('y') || all.has('true') || all.has('1');
+          const hasNo = all.has('no') || all.has('n') || all.has('false') || all.has('0');
+          const direct = Array.from(cands).some(c => all.has(c));
+          const wanted = (yn === true) ? (hasYes && !hasNo) : (yn === false) ? (hasNo && !hasYes) : false;
+          if (direct || wanted) { picked = r; break; }
         }
         if (picked) {
-          // Prefer clicking the associated label or the radio itself to trigger framework handlers
           try {
             const pid = picked.getAttribute('id');
             const lab = pid ? document.querySelector(`label[for="${CSS.escape(pid)}"]`) : null;
             if (lab && visible(lab)) { clickLikeUser(lab); } else { clickLikeUser(picked); }
-          } catch {}
-          // If still not selected, try clicking common wrappers around hidden radios
-          try {
+            // Fallback: click common wrappers/buttons if present
             if (!picked.checked) {
               const wrappers = [];
-              try { const rr = picked.closest('[role="radio"]'); if (rr) wrappers.push(rr); } catch {}
               try { if (picked.parentElement) wrappers.push(picked.parentElement); } catch {}
-              try { const lab = picked.getAttribute('id') ? document.querySelector(`label[for="${CSS.escape(picked.getAttribute('id'))}"]`) : null; if (lab) wrappers.push(lab); } catch {}
+              try { const lab2 = picked.getAttribute('id') ? document.querySelector(`label[for="${CSS.escape(picked.getAttribute('id'))}"]`) : null; if (lab2) wrappers.push(lab2); } catch {}
               try { const btn = picked.closest('button, [role="button"]'); if (btn) wrappers.push(btn); } catch {}
               for (const w of wrappers) { if (w && visible(w)) { clickLikeUser(w); if (picked.checked) break; } }
             }
@@ -619,7 +616,6 @@
           try {
             const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'checked');
             if (desc && desc.set) desc.set.call(picked, true); else picked.checked = true;
-            // Keep aria-checked in sync for frameworks that style off it
             try { picked.setAttribute('aria-checked', 'true'); } catch {}
           } catch {}
           try { picked.dispatchEvent(new Event('input', { bubbles: true })); } catch {}
@@ -628,6 +624,7 @@
         }
         return false;
       }
+
       // Checkboxes
       if (type === 'checkbox') {
         const nv = norm(value);
@@ -652,7 +649,9 @@
         el.dispatchEvent(new Event('change', { bubbles: true }));
         return true;
       }
+
       if (type === 'file') return false;
+
       // Graduation date special handling
       if (k === 'graduationDate') {
         const parts = parseDateParts(value);
@@ -660,11 +659,13 @@
         const proto = tag === 'input' ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
         const desc = Object.getOwnPropertyDescriptor(proto, 'value');
         const newVal = v;
+        if (norm(el.value || '') === norm(newVal || '')) return false;
         if (desc && desc.set) desc.set.call(el, newVal); else el.value = newVal;
         el.dispatchEvent(new Event('input', { bubbles: true }));
         el.dispatchEvent(new Event('change', { bubbles: true }));
         return true;
       }
+
       // Try ARIA combobox-style dropdowns before plain text set
       try {
         const hintCombo2 = el.getAttribute('role') === 'combobox' || !!el.closest('[role="combobox"]') || (el.getAttribute('aria-haspopup')||'').includes('listbox') || !!el.getAttribute('aria-controls');
@@ -674,8 +675,10 @@
         }
       } catch {}
 
+      // Plain text/textarea
       const proto = tag === 'input' ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
       const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+      if (norm(el.value || '') === norm((value || '').toString())) return false;
       if (desc && desc.set) desc.set.call(el, value); else el.value = value;
       el.dispatchEvent(new Event('input', { bubbles: true }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
@@ -794,9 +797,11 @@
     const matchYN = (node) => {
       const t = norm((node.getAttribute && (node.getAttribute('aria-label') || node.getAttribute('title'))) || node.textContent || '');
       const v = norm((node.getAttribute && (node.getAttribute('value') || node.getAttribute('data-value'))) || '');
-      const bag = `${t} ${v}`;
-      if (wantYes) return bag.includes('yes') || v === '1' || t === 'y' || v === 'true';
-      if (wantNo) return bag.includes('no') || v === '0' || t === 'n' || v === 'false';
+      const all = new Set(`${t} ${v}`.split(/[^a-z0-9]+/).filter(Boolean));
+      const hasYes = all.has('yes') || all.has('y') || all.has('true') || all.has('1');
+      const hasNo = all.has('no') || all.has('n') || all.has('false') || all.has('0');
+      if (wantYes) return hasYes && !hasNo;
+      if (wantNo) return hasNo && !hasYes;
       return false;
     };
     let pick = items.find(matchYN) || null;
@@ -806,8 +811,18 @@
       if (labPick) pick = labPick;
     }
     if (!pick && items.length >= 2) {
-      const y = items.find(n => norm((n.getAttribute && (n.getAttribute('aria-label')||'')) || n.textContent || '').includes('yes'));
-      const n = items.find(n => norm((n.getAttribute && (n.getAttribute('aria-label')||'')) || n.textContent || '').includes('no'));
+      const tokensOf = (node) => {
+        const t = norm(((node.getAttribute && (node.getAttribute('aria-label') || node.getAttribute('title'))) || node.textContent || ''));
+        return new Set(t.split(/[^a-z0-9]+/).filter(Boolean));
+      };
+      const y = items.find(n => {
+        const all = tokensOf(n);
+        return all.has('yes') || all.has('y') || all.has('true') || all.has('1');
+      });
+      const n = items.find(n => {
+        const all = tokensOf(n);
+        return all.has('no') || all.has('n') || all.has('false') || all.has('0');
+      });
       pick = wantYes ? (y || items[0]) : (n || items[1] || items[0]);
     }
     if (!pick) return false;
