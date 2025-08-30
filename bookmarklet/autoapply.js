@@ -22,7 +22,7 @@
     // Demographic
     gender: '', raceEthnicity: '', veteranStatus: '', disabilityStatus: '', pronouns: ''
   };
-  const DEFAULT_SETTINGS = { autoEnabled: false };
+  const DEFAULT_SETTINGS = { autoEnabled: false, workdaySafe: true };
   const storage = {
     getProfile() { try { return { ...DEFAULT_PROFILE, ...(JSON.parse(localStorage.getItem(LS_KEYS.profile) || 'null') || {}) }; } catch { return { ...DEFAULT_PROFILE }; } },
     saveProfile(p) { localStorage.setItem(LS_KEYS.profile, JSON.stringify({ ...DEFAULT_PROFILE, ...(p || {}) })); },
@@ -259,18 +259,44 @@
     COMBO_BUSY = true;
     const finish = () => { COMBO_BUSY = false; };
     const isWD = (typeof workdayDetect === 'function') ? workdayDetect() : /workday|myworkdayjobs/.test(location.host);
+    let settings = {};
+    try { settings = (storage && storage.getSettings) ? (storage.getSettings() || {}) : {}; } catch {}
+    const wdSafe = !!(isWD && (settings.workdaySafe !== false));
     const root = el.closest('[role="combobox"], [aria-haspopup="listbox"], [data-automation-id*="select"], [data-automation-id*="ComboBox"], [data-automation-id*="prompt"]') || el;
     const isExpanded = () => ((root.getAttribute && root.getAttribute('aria-expanded')) || (el.getAttribute && el.getAttribute('aria-expanded')) || '').toLowerCase() === 'true';
     const open = () => {
       // Try clicking an explicit toggle first, but avoid closing an already-open list
-      const toggler = root.querySelector('[aria-haspopup], [role="button"], button') || root;
+      const ariaIds = [el.getAttribute('aria-controls'), root.getAttribute && root.getAttribute('aria-controls')].filter(Boolean);
+      let toggler =
+        root.querySelector('button[aria-haspopup], [role="button"][aria-haspopup]')
+        || (root.closest && root.closest('[data-automation-id]')?.querySelector('button[aria-haspopup], [role="button"][aria-haspopup]'))
+        || (root.parentElement && root.parentElement.querySelector('button[aria-haspopup], [role="button"][aria-haspopup]'))
+        || root.querySelector('[role="button"], [aria-haspopup]')
+        || root;
+      if (ariaIds.length) {
+        try {
+          const candidates = [
+            ...Array.from(root.querySelectorAll('button[aria-haspopup], [role="button"][aria-haspopup]')),
+            ...(root.closest && root.closest('[data-automation-id]') ? Array.from(root.closest('[data-automation-id]').querySelectorAll('button[aria-haspopup], [role="button"][aria-haspopup]')) : []),
+            ...(root.parentElement ? Array.from(root.parentElement.querySelectorAll('button[aria-haspopup], [role="button"][aria-haspopup]')) : [])
+          ];
+          const match = candidates.find(btn => ariaIds.includes((btn.getAttribute && btn.getAttribute('aria-controls')) || ''));
+          if (match) toggler = match;
+        } catch {}
+      }
       if (!isExpanded()) {
-        try { toggler.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); } catch {}
-        try { toggler.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); } catch {}
-        try { toggler.click(); } catch {}
+        if (wdSafe) {
+          try { toggler.click(); } catch {}
+        } else {
+          try { toggler.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); } catch {}
+          try { toggler.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); } catch {}
+          try { toggler.click(); } catch {}
+        }
       }
       try { el.focus(); } catch {}
-      try { el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowDown' })); } catch {}
+      if (!wdSafe) {
+        try { el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowDown' })); } catch {}
+      }
     };
     open();
     const candidates = buildSelectCandidates(el, value);
@@ -286,15 +312,19 @@
                || null;
       }
       if (inputEl) {
-        const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
-        const q = (value != null ? String(value) : '');
-        try { inputEl.focus(); } catch {}
-        if (desc && desc.set) desc.set.call(inputEl, q); else inputEl.value = q;
-        inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-        // Nudge the menu to refresh filtering
-        try { inputEl.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowDown' })); } catch {}
-        try { inputEl.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'ArrowDown' })); } catch {}
-        try { inputEl.dispatchEvent(new Event('change', { bubbles: true })); } catch {}
+        if (!wdSafe) {
+          const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+          const q = (value != null ? String(value) : '');
+          try { inputEl.focus(); } catch {}
+          if (desc && desc.set) desc.set.call(inputEl, q); else inputEl.value = q;
+          inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+          // Nudge the menu to refresh filtering
+          try { inputEl.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowDown' })); } catch {}
+          try { inputEl.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'ArrowDown' })); } catch {}
+          try { inputEl.dispatchEvent(new Event('change', { bubbles: true })); } catch {}
+        } else {
+          // Workday-safe: avoid typing; just rely on open list + exact match search
+        }
       }
     } catch {}
     // Find options with polling (to allow async filtering to render)
@@ -333,15 +363,15 @@
         }
       } catch {}
       for (const list of lists.reverse()) {
-        const opts = Array.from(list.querySelectorAll('[role="option"], [data-automation-id="promptOption"], li, div'))
+        const opts = Array.from(list.querySelectorAll('[data-automation-id="promptOption"], [role="option"]'))
           .filter(visibleOnPage);
         for (const cand of candidates) {
           // Prioritize exact matches
           item = opts.find(o => norm(o.getAttribute('data-value') || '') === cand
                              || norm(o.getAttribute('aria-label') || '') === cand
                              || norm(o.textContent || '') === cand);
-          if (!item) {
-            // Then partial includes
+          if (!item && !wdSafe) {
+            // Then partial includes (avoid on Workday-safe)
             item = opts.find(o => {
               const t = norm(o.textContent || '');
               const dv = norm(o.getAttribute('data-value') || '');
@@ -354,13 +384,18 @@
         if (item) break;
       }
       if (item) {
-        const clickTarget = item.querySelector && (item.querySelector('[data-automation-id="promptOption"], [role="option"], button, [tabindex]')) || item;
+        const optEl = (item.closest && item.closest('[data-automation-id="promptOption"], [role="option"]')) || (item.querySelector && item.querySelector('[data-automation-id="promptOption"], [role="option"]')) || item;
+        const clickTarget = optEl;
         try { clickTarget.scrollIntoView({ block: 'nearest' }); } catch {}
-        try { clickTarget.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); } catch {}
-        try { clickTarget.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); } catch {}
-        try { clickTarget.click(); } catch {}
-        try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch {}
-        try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch {}
+        if (wdSafe) {
+          try { clickTarget.click(); } catch {}
+        } else {
+          try { clickTarget.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); } catch {}
+          try { clickTarget.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); } catch {}
+          try { clickTarget.click(); } catch {}
+          try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch {}
+          try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch {}
+        }
         finish();
         return true;
       }
@@ -369,7 +404,7 @@
     if (tryPick()) return true;
     // Poll a few times to wait for menu to update
     let attempts = 0;
-    const maxAttempts = 20;
+    const maxAttempts = wdSafe ? 50 : 20;
     const timer = () => {
       if (tryPick()) return;
       attempts++;
@@ -549,7 +584,8 @@
       // Try ARIA combobox-style dropdowns before plain text set
       try {
         const hintCombo = el.getAttribute('role') === 'combobox' || !!el.closest('[role="combobox"]') || (el.getAttribute('aria-haspopup')||'').includes('listbox') || !!el.getAttribute('aria-controls');
-        if (hintCombo || ['country','state','hearAboutUs','phoneDeviceType','phoneCountryCode'].includes(k || '')) {
+        const shouldCombo = hintCombo || ['country','state','hearAboutUs','phoneDeviceType','phoneCountryCode'].includes(k || '');
+        if (shouldCombo) {
           if (attemptComboboxSelect(el, value)) return true;
         }
       } catch {}
@@ -676,10 +712,8 @@
       for (const id of ids) {
         const host = document.querySelector(`[data-automation-id="${id}"]`);
         if (host) {
-          const input = host.querySelector('input, textarea, select, [role="combobox"], [aria-haspopup*="listbox"]')
-                       || host.closest('[data-automation-id]')?.querySelector('input, textarea, select, [role="combobox"], [aria-haspopup*="listbox"]')
-                       || host.querySelector('button[aria-haspopup*="listbox"], [aria-controls]')
-                       || host.closest('[data-automation-id]')?.querySelector('button[aria-haspopup*="listbox"], [aria-controls]');
+          const input = host.querySelector('input, textarea, select')
+                       || host.closest('[data-automation-id]')?.querySelector('input, textarea, select');
           if (input && setInputValue(input, val)) { count++; break; }
         }
       }
