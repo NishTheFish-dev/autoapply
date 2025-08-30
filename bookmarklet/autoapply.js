@@ -255,7 +255,7 @@
   }
 
   // Wait until a condition is true or until timeout
-  function waitUntil(checkFn, timeoutMs = 3000, intervalMs = 60) {
+  function waitUntil(checkFn, timeoutMs = 3000, intervalMs = 40) {
     return new Promise(resolve => {
       const start = Date.now();
       const tick = () => {
@@ -410,6 +410,33 @@
           try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch {}
           try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch {}
         }
+        // Close the dropdown quickly after selection if still open
+        try {
+          const stillOpen = isExpanded() || findLists().some(l => visibleOnPage(l));
+          if (stillOpen) {
+            // Try Escape on the input/root, then blur, then toggler click
+            const inputEl = root.querySelector('input') || el;
+            try { inputEl.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Escape' })); } catch {}
+            try { inputEl.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Escape' })); } catch {}
+            try { inputEl.blur(); } catch {}
+            // As a fallback, try clicking the same toggler logic near the host
+            let closer =
+              root.querySelector('button[aria-haspopup], [role="button"][aria-haspopup]')
+              || (root.closest && root.closest('[data-automation-id]')?.querySelector('button[aria-haspopup], [role="button"][aria-haspopup]'))
+              || (root.parentElement && root.parentElement.querySelector('button[aria-haspopup], [role="button"][aria-haspopup]'))
+              || null;
+            try { if (closer && (isExpanded() || findLists().some(l => visibleOnPage(l)))) closer.click(); } catch {}
+            // Last resort: click outside to dismiss popover-style menus
+            try {
+              if (isExpanded() || findLists().some(l => visibleOnPage(l))) {
+                const pt = { clientX: 5, clientY: 5 };
+                document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, ...pt }));
+                document.body.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, ...pt }));
+                document.body.dispatchEvent(new MouseEvent('click', { bubbles: true, ...pt }));
+              }
+            } catch {}
+          }
+        } catch {}
         finish();
         return true;
       }
@@ -418,7 +445,7 @@
     if (tryPick()) return true;
     // Poll a few times to wait for menu to update
     let attempts = 0;
-    const maxAttempts = wdSafe ? 50 : 20;
+    const maxAttempts = wdSafe ? 25 : 14;
     const timer = () => {
       if (tryPick()) return;
       attempts++;
@@ -436,9 +463,9 @@
         finish();
         return;
       }
-      setTimeout(timer, 60);
+      setTimeout(timer, 40);
     };
-    setTimeout(timer, 60);
+    setTimeout(timer, 40);
     return true; // scheduled
   }
 
@@ -528,6 +555,13 @@
     }
     if (FILL_PHASE === 'combobox') {
       if (!(isComboHostNonInput || (tag === 'input' && shouldCombo))) return false;
+    }
+    // Handle ARIA radio groups and button-based Yes/No
+    if (!['input','select','textarea'].includes(tag)) {
+      if (role === 'radiogroup' || role === 'radio' || el.closest('[role="radiogroup"]')) {
+        const ok = attemptAriaRadioSelect(el, value);
+        if (ok) return true;
+      }
     }
     // If this is a combobox/listbox host (non-input), try ARIA combobox selection
     if ((role === 'combobox' || hasListbox) && tag !== 'input' && tag !== 'select' && tag !== 'textarea') {
@@ -671,7 +705,7 @@
   }
 
   function findAllInputs(root=document) {
-    return Array.from(root.querySelectorAll('input, textarea, select, [role="combobox"], [aria-haspopup*="listbox"]')).filter(el => {
+    return Array.from(root.querySelectorAll('input, textarea, select, [role="combobox"], [aria-haspopup*="listbox"], [role="radiogroup"], [role="radio"]')).filter(el => {
       const type = (el.type || '').toLowerCase();
       const isComboHost = (
         (el.getAttribute && (el.getAttribute('role') || '').toLowerCase() === 'combobox') ||
@@ -683,6 +717,54 @@
       if (el.getAttribute && (el.getAttribute('aria-disabled') === 'true' || el.getAttribute('aria-readonly') === 'true')) return false;
       return visible(el);
     });
+  }
+
+  // Try to set ARIA radio groups or button-based Yes/No controls
+  function attemptAriaRadioSelect(el, value) {
+    const nv = norm(value);
+    const yn = truthyFromString(nv);
+    const wantYes = yn === true || ['yes','y','true','1'].includes(nv);
+    const wantNo = yn === false || ['no','n','false','0'].includes(nv);
+    if (!wantYes && !wantNo) return false;
+    const group = el.closest('[role="radiogroup"]') || el;
+    let items = [];
+    try { items = Array.from(group.querySelectorAll('[role="radio"]')); } catch {}
+    if (!items.length) {
+      try { items = Array.from(group.querySelectorAll('input[type="radio"]')); } catch {}
+    }
+    // Fallback to buttons if radios are not present
+    if (!items.length) {
+      try { items = Array.from(group.querySelectorAll('button, [role="button"]')); } catch {}
+    }
+    if (!items.length && el.parentElement) {
+      try { items = Array.from(el.parentElement.querySelectorAll('[role="radio"], input[type="radio"], button, [role="button"]')); } catch {}
+    }
+    if (!items.length) return false;
+    const matchYN = (node) => {
+      const t = norm((node.getAttribute && (node.getAttribute('aria-label') || node.getAttribute('title'))) || node.textContent || '');
+      const v = norm((node.getAttribute && (node.getAttribute('value') || node.getAttribute('data-value'))) || '');
+      const bag = `${t} ${v}`;
+      if (wantYes) return bag.includes('yes') || v === '1' || t === 'y' || v === 'true';
+      if (wantNo) return bag.includes('no') || v === '0' || t === 'n' || v === 'false';
+      return false;
+    };
+    let pick = items.find(matchYN) || null;
+    if (!pick && items.length >= 2) {
+      const y = items.find(n => norm((n.getAttribute && (n.getAttribute('aria-label')||'')) || n.textContent || '').includes('yes'));
+      const n = items.find(n => norm((n.getAttribute && (n.getAttribute('aria-label')||'')) || n.textContent || '').includes('no'));
+      pick = wantYes ? (y || items[0]) : (n || items[1] || items[0]);
+    }
+    if (!pick) return false;
+    try { pick.scrollIntoView({ block: 'nearest' }); } catch {}
+    if (pick.tagName && pick.tagName.toLowerCase() === 'input' && (pick.type||'').toLowerCase() === 'radio') {
+      const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'checked');
+      if (desc && desc.set) desc.set.call(pick, true); else pick.checked = true;
+      pick.dispatchEvent(new Event('input', { bubbles: true }));
+      pick.dispatchEvent(new Event('change', { bubbles: true }));
+    } else {
+      try { pick.click(); } catch {}
+    }
+    return true;
   }
 
   // Collect ARIA combobox candidates for sequential processing
@@ -711,14 +793,14 @@
   async function processComboboxQueue(queue) {
     let done = 0;
     for (const { el, value } of queue) {
-      await waitUntil(() => !COMBO_BUSY, 5000, 80);
+      await waitUntil(() => !COMBO_BUSY, 3500, 40);
       // small pause to let reactive UIs settle
-      await new Promise(r => setTimeout(r, 50));
+      await new Promise(r => setTimeout(r, 25));
       let started = false;
       try { started = attemptComboboxSelect(el, value); } catch {}
       if (started) {
-        await waitUntil(() => !COMBO_BUSY, 6000, 80);
-        await new Promise(r => setTimeout(r, 60));
+        await waitUntil(() => !COMBO_BUSY, 4000, 40);
+        await new Promise(r => setTimeout(r, 30));
         done++;
       }
     }
