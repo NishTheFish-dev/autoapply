@@ -78,6 +78,13 @@
   };
   const KEYWORDS = Object.entries(SYNONYMS).flatMap(([k, arr]) => arr.map(a => [k, strip(a)]));
   const ATTRS = ['name','id','placeholder','aria-label','aria-labelledby','title','data-automation-id','data-testid'];
+  function expandAttrTokens(v) {
+    const s = (v || '') + '';
+    const out = [s];
+    const spaced = s.replace(/[_-]+/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2');
+    if (spaced !== s) out.push(spaced);
+    return out;
+  }
 
   // Demographics helpers for NA -> Prefer not to answer mapping
   const DEMO_KEYS = new Set(['gender','raceEthnicity','veteranStatus','disabilityStatus','pronouns']);
@@ -248,12 +255,15 @@
   // Try to interact with ARIA combobox/popover style dropdowns (e.g., Workday)
   function attemptComboboxSelect(el, value) {
     const root = el.closest('[role="combobox"], [aria-haspopup="listbox"], [data-automation-id*="select"], [data-automation-id*="ComboBox"], [data-automation-id*="prompt"]') || el;
+    const isExpanded = () => ((root.getAttribute && root.getAttribute('aria-expanded')) || (el.getAttribute && el.getAttribute('aria-expanded')) || '').toLowerCase() === 'true';
     const open = () => {
-      // Try clicking an explicit toggle first
+      // Try clicking an explicit toggle first, but avoid closing an already-open list
       const toggler = root.querySelector('[aria-haspopup], [role="button"], button') || root;
-      try { toggler.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); } catch {}
-      try { toggler.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); } catch {}
-      try { toggler.click(); } catch {}
+      if (!isExpanded()) {
+        try { toggler.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); } catch {}
+        try { toggler.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); } catch {}
+        try { toggler.click(); } catch {}
+      }
       try { el.focus(); } catch {}
       try { el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowDown' })); } catch {}
     };
@@ -261,54 +271,105 @@
     const candidates = buildSelectCandidates(el, value);
     // Try typing into the input to filter options if possible
     try {
-      const inputEl = el.tagName && el.tagName.toLowerCase() === 'input' ? el : (root.querySelector('input') || null);
+      let inputEl = null;
+      if (el.tagName && el.tagName.toLowerCase() === 'input') {
+        inputEl = el;
+      } else {
+        inputEl = root.querySelector('input')
+               || (root.nextElementSibling && root.nextElementSibling.tagName === 'INPUT' ? root.nextElementSibling : null)
+               || (root.parentElement && root.parentElement.querySelector('input'))
+               || null;
+      }
       if (inputEl) {
         const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
         const q = candidates[0] || (value || '');
+        try { inputEl.focus(); } catch {}
         if (desc && desc.set) desc.set.call(inputEl, q); else inputEl.value = q;
         inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+        // Nudge the menu to refresh filtering
+        try { inputEl.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowDown' })); } catch {}
+        try { inputEl.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'ArrowDown' })); } catch {}
+        try { inputEl.dispatchEvent(new Event('change', { bubbles: true })); } catch {}
       }
     } catch {}
-    // Find likely popup/list containers
+    // Find options with polling (to allow async filtering to render)
     const ids = [el.getAttribute('aria-controls'), root.getAttribute && root.getAttribute('aria-controls')].filter(Boolean);
-    const containers = [];
-    for (const id of ids) { const node = id && document.getElementById(id); if (node) containers.push(node); }
-    containers.push(...Array.from(document.querySelectorAll('[role="listbox"]')));
-    containers.push(...Array.from(document.querySelectorAll('[data-automation-id="selectMenu"], [data-automation-id*="selectMenu"], [data-automation-id="promptOption"]')));
-    // Filter visible and prefer last (most recent popup appended to body)
-    const lists = containers.filter(visibleOnPage).slice(-3); // limit scope
-    let item = null;
-    for (const list of lists.reverse()) {
-      const opts = Array.from(list.querySelectorAll('[role="option"], [data-automation-id="promptOption"], li, div'))
-        .filter(visibleOnPage);
-      for (const cand of candidates) {
-        // Prioritize exact matches
-        item = opts.find(o => norm(o.getAttribute('data-value') || '') === cand
-                           || norm(o.getAttribute('aria-label') || '') === cand
-                           || norm(o.textContent || '') === cand);
-        if (!item) {
-          // Then partial includes
-          item = opts.find(o => {
-            const t = norm(o.textContent || '');
-            const dv = norm(o.getAttribute('data-value') || '');
-            const al = norm(o.getAttribute('aria-label') || '');
-            return t.includes(cand) || dv.includes(cand) || al.includes(cand) || cand.includes(t);
-          });
+    const findLists = () => {
+      const containers = [];
+      for (const id of ids) { const node = id && document.getElementById(id); if (node) containers.push(node); }
+      containers.push(...Array.from(document.querySelectorAll('[role="listbox"]')));
+      containers.push(...Array.from(document.querySelectorAll('[data-automation-id="selectMenu"], [data-automation-id*="selectMenu"], [data-automation-id="promptOption"]')));
+      return containers.filter(visibleOnPage).slice(-3);
+    };
+    const tryPick = () => {
+      const lists = findLists();
+      let item = null;
+      // Prefer the currently highlighted option if present via aria-activedescendant
+      try {
+        const combiInput = root.querySelector('input');
+        const activeId = (combiInput && (combiInput.getAttribute('aria-activedescendant') || '')) || '';
+        if (activeId) {
+          const activeEl = document.getElementById(activeId);
+          if (activeEl && visibleOnPage(activeEl)) {
+            item = activeEl.closest('[role="option"], li, div') || activeEl;
+          }
+        }
+      } catch {}
+      for (const list of lists.reverse()) {
+        const opts = Array.from(list.querySelectorAll('[role="option"], [data-automation-id="promptOption"], li, div'))
+          .filter(visibleOnPage);
+        for (const cand of candidates) {
+          // Prioritize exact matches
+          item = opts.find(o => norm(o.getAttribute('data-value') || '') === cand
+                             || norm(o.getAttribute('aria-label') || '') === cand
+                             || norm(o.textContent || '') === cand);
+          if (!item) {
+            // Then partial includes
+            item = opts.find(o => {
+              const t = norm(o.textContent || '');
+              const dv = norm(o.getAttribute('data-value') || '');
+              const al = norm(o.getAttribute('aria-label') || '');
+              return t.includes(cand) || dv.includes(cand) || al.includes(cand) || cand.includes(t);
+            });
+          }
+          if (item) break;
         }
         if (item) break;
       }
-      if (item) break;
-    }
-    if (item) {
-      try { item.scrollIntoView({ block: 'nearest' }); } catch {}
-      try { item.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); } catch {}
-      try { item.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); } catch {}
-      try { item.click(); } catch {}
-      try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch {}
-      try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch {}
-      return true;
-    }
-    return false;
+      if (item) {
+        const clickTarget = item.querySelector && (item.querySelector('[data-automation-id="promptOption"], [role="option"], button, [tabindex]')) || item;
+        try { clickTarget.scrollIntoView({ block: 'nearest' }); } catch {}
+        try { clickTarget.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); } catch {}
+        try { clickTarget.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); } catch {}
+        try { clickTarget.click(); } catch {}
+        try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch {}
+        try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch {}
+        return true;
+      }
+      return false;
+    };
+    if (tryPick()) return true;
+    // Poll a few times to wait for menu to update
+    let attempts = 0;
+    const maxAttempts = 20;
+    const timer = () => {
+      if (tryPick()) return;
+      attempts++;
+      if (attempts >= maxAttempts) {
+        // Final fallback: commit current typed value
+        try {
+          const inputEl = root.querySelector('input') || el;
+          if (inputEl) {
+            inputEl.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter' }));
+            inputEl.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Enter' }));
+          }
+        } catch {}
+        return;
+      }
+      setTimeout(timer, 60);
+    };
+    setTimeout(timer, 60);
+    return true; // scheduled
   }
 
   // US state mapping for abbreviation/full-name cross-matching
@@ -357,7 +418,7 @@
 
   function keyForElement(el) {
     const c = [];
-    for (const a of ATTRS) { const v = el.getAttribute(a); if (v) c.push(v); }
+    for (const a of ATTRS) { const v = el.getAttribute(a); if (v) { c.push(v); for (const ex of expandAttrTokens(v)) c.push(ex); } }
     c.push(getLabelText(el));
     const text = strip(c.filter(Boolean).join(' | '));
     // Detect likely phone extension fields and skip mapping to 'phone'
@@ -527,7 +588,12 @@
   function findAllInputs(root=document) {
     return Array.from(root.querySelectorAll('input, textarea, select, [role="combobox"], [aria-haspopup*="listbox"]')).filter(el => {
       const type = (el.type || '').toLowerCase();
-      if (['hidden','submit','button','image','reset','file'].includes(type)) return false;
+      const isComboHost = (
+        (el.getAttribute && (el.getAttribute('role') || '').toLowerCase() === 'combobox') ||
+        ((el.getAttribute && (el.getAttribute('aria-haspopup') || '').toLowerCase().includes('listbox')) || !!(el.getAttribute && el.getAttribute('aria-controls')))
+      );
+      if (['hidden','submit','image','reset','file'].includes(type)) return false;
+      if (type === 'button' && !isComboHost) return false; // allow button if it hosts a listbox/combobox
       if (el.disabled || el.readOnly) return false;
       if (el.getAttribute && (el.getAttribute('aria-disabled') === 'true' || el.getAttribute('aria-readonly') === 'true')) return false;
       return visible(el);
