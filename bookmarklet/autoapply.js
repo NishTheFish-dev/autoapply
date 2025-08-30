@@ -384,14 +384,25 @@
           item = opts.find(o => norm(o.getAttribute('data-value') || '') === cand
                              || norm(o.getAttribute('aria-label') || '') === cand
                              || norm(o.textContent || '') === cand);
-          if (!item && !wdSafe) {
-            // Then partial includes (avoid on Workday-safe)
-            item = opts.find(o => {
-              const t = norm(o.textContent || '');
-              const dv = norm(o.getAttribute('data-value') || '');
-              const al = norm(o.getAttribute('aria-label') || '');
-              return t.includes(cand) || dv.includes(cand) || al.includes(cand) || cand.includes(t);
-            });
+          if (!item) {
+            if (!wdSafe) {
+              // Then partial includes (non-Workday-safe)
+              item = opts.find(o => {
+                const t = norm(o.textContent || '');
+                const dv = norm(o.getAttribute('data-value') || '');
+                const al = norm(o.getAttribute('aria-label') || '');
+                return t.includes(cand) || dv.includes(cand) || al.includes(cand) || cand.includes(t);
+              });
+            } else {
+              // Workday-safe: allow partial only if it yields a unique option
+              const partials = opts.filter(o => {
+                const t = norm(o.textContent || '');
+                const dv = norm(o.getAttribute('data-value') || '');
+                const al = norm(o.getAttribute('aria-label') || '');
+                return t.includes(cand) || dv.includes(cand) || al.includes(cand) || cand.includes(t);
+              });
+              if (partials.length === 1) item = partials[0];
+            }
           }
           if (item) break;
         }
@@ -401,12 +412,10 @@
         const optEl = (item.closest && item.closest('[data-automation-id="promptOption"], [role="option"]')) || (item.querySelector && item.querySelector('[data-automation-id="promptOption"], [role="option"]')) || item;
         const clickTarget = optEl;
         try { clickTarget.scrollIntoView({ block: 'nearest' }); } catch {}
-        if (wdSafe) {
-          try { clickTarget.click(); } catch {}
-        } else {
-          try { clickTarget.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); } catch {}
-          try { clickTarget.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); } catch {}
-          try { clickTarget.click(); } catch {}
+        // Use realistic click sequence for better framework compatibility
+        try { clickLikeUser(clickTarget); } catch {}
+        // Fire input/change on host input only in non-Workday-safe mode
+        if (!wdSafe) {
           try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch {}
           try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch {}
         }
@@ -1111,20 +1120,18 @@
     // Phase 1: non-dropdown textual fields
     FILL_PHASE = 'textual';
     let c1 = 0;
-    try { c1 = vendor.fill(profile); } catch {}
-    if (c1 === 0 && vendor.id !== 'generic') {
-      try { const gc = fillGeneric(profile); if (gc > 0) c1 = gc; } catch {}
-    }
+    try { c1 += (+vendor.fill(profile) || 0); } catch {}
+    // Also run generic textual fill to cover fields not mapped by vendor
+    try { if (vendor.id !== 'generic') c1 += (+fillGeneric(profile) || 0); } catch {}
     try { const fc1 = fillInFrames(profile); if (fc1 > 0) c1 += fc1; } catch {}
     total += c1;
 
     // Phase 2: native <select> elements
     FILL_PHASE = 'select';
     let c2 = 0;
-    try { c2 = vendor.fill(profile); } catch {}
-    if (c2 === 0 && vendor.id !== 'generic') {
-      try { const gc2 = fillGeneric(profile); if (gc2 > 0) c2 = gc2; } catch {}
-    }
+    try { c2 += (+vendor.fill(profile) || 0); } catch {}
+    // Also run generic select fill to cover fields not mapped by vendor
+    try { if (vendor.id !== 'generic') c2 += (+fillGeneric(profile) || 0); } catch {}
     try { const fc2 = fillInFrames(profile); if (fc2 > 0) c2 += fc2; } catch {}
     total += c2;
 
