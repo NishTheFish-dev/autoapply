@@ -10,6 +10,7 @@
 
   const NS = '__AUTOAPPLY__';
   const log = (...a) => console.debug('[AutoApply]', ...a);
+  let COMBO_BUSY = false; // prevent concurrent combobox operations that can confuse frameworks like Workday
 
   // --- Storage (localStorage) ---
   const LS_KEYS = { profile: 'aa_profile_v1', settings: 'aa_settings_v1' };
@@ -254,6 +255,10 @@
 
   // Try to interact with ARIA combobox/popover style dropdowns (e.g., Workday)
   function attemptComboboxSelect(el, value) {
+    if (COMBO_BUSY) return false;
+    COMBO_BUSY = true;
+    const finish = () => { COMBO_BUSY = false; };
+    const isWD = (typeof workdayDetect === 'function') ? workdayDetect() : /workday|myworkdayjobs/.test(location.host);
     const root = el.closest('[role="combobox"], [aria-haspopup="listbox"], [data-automation-id*="select"], [data-automation-id*="ComboBox"], [data-automation-id*="prompt"]') || el;
     const isExpanded = () => ((root.getAttribute && root.getAttribute('aria-expanded')) || (el.getAttribute && el.getAttribute('aria-expanded')) || '').toLowerCase() === 'true';
     const open = () => {
@@ -282,7 +287,7 @@
       }
       if (inputEl) {
         const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
-        const q = candidates[0] || (value || '');
+        const q = (value != null ? String(value) : '');
         try { inputEl.focus(); } catch {}
         if (desc && desc.set) desc.set.call(inputEl, q); else inputEl.value = q;
         inputEl.dispatchEvent(new Event('input', { bubbles: true }));
@@ -297,8 +302,20 @@
     const findLists = () => {
       const containers = [];
       for (const id of ids) { const node = id && document.getElementById(id); if (node) containers.push(node); }
-      containers.push(...Array.from(document.querySelectorAll('[role="listbox"]')));
-      containers.push(...Array.from(document.querySelectorAll('[data-automation-id="selectMenu"], [data-automation-id*="selectMenu"], [data-automation-id="promptOption"]')));
+      // For Workday, avoid global scans that may click unrelated listboxes and break the app
+      if (isWD) {
+        if (containers.length === 0) {
+          // Try local vicinity only
+          const near = root.closest('[data-automation-id]') || root.parentElement || root;
+          if (near) {
+            containers.push(...Array.from(near.querySelectorAll('[role="listbox"], [data-automation-id="selectMenu"]')));
+          }
+        }
+      } else {
+        // Non-Workday: allow a broader search as last resort
+        containers.push(...Array.from(document.querySelectorAll('[role="listbox"]')));
+        containers.push(...Array.from(document.querySelectorAll('[data-automation-id="selectMenu"], [data-automation-id*="selectMenu"], [data-automation-id="promptOption"]')));
+      }
       return containers.filter(visibleOnPage).slice(-3);
     };
     const tryPick = () => {
@@ -344,6 +361,7 @@
         try { clickTarget.click(); } catch {}
         try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch {}
         try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch {}
+        finish();
         return true;
       }
       return false;
@@ -356,14 +374,17 @@
       if (tryPick()) return;
       attempts++;
       if (attempts >= maxAttempts) {
-        // Final fallback: commit current typed value
-        try {
-          const inputEl = root.querySelector('input') || el;
-          if (inputEl) {
-            inputEl.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter' }));
-            inputEl.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Enter' }));
-          }
-        } catch {}
+        // Final fallback: only press Enter outside Workday to avoid accidental submits/navigations
+        if (!isWD) {
+          try {
+            const inputEl = root.querySelector('input') || el;
+            if (inputEl) {
+              inputEl.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter' }));
+              inputEl.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Enter' }));
+            }
+          } catch {}
+        }
+        finish();
         return;
       }
       setTimeout(timer, 60);
@@ -655,7 +676,10 @@
       for (const id of ids) {
         const host = document.querySelector(`[data-automation-id="${id}"]`);
         if (host) {
-          const input = host.querySelector('input, textarea, select') || host.closest('[data-automation-id]')?.querySelector('input, textarea, select');
+          const input = host.querySelector('input, textarea, select, [role="combobox"], [aria-haspopup*="listbox"]')
+                       || host.closest('[data-automation-id]')?.querySelector('input, textarea, select, [role="combobox"], [aria-haspopup*="listbox"]')
+                       || host.querySelector('button[aria-haspopup*="listbox"], [aria-controls]')
+                       || host.closest('[data-automation-id]')?.querySelector('button[aria-haspopup*="listbox"], [aria-controls]');
           if (input && setInputValue(input, val)) { count++; break; }
         }
       }
